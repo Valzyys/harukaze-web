@@ -158,7 +158,7 @@ const Header = () => {
       <nav className="navbar">
         {/* Logo */}
         <div className="logo" onClick={() => navigate("/")}>
-          <span className="logo-bold">GISTREAM</span>
+          <span className="logo-bold">HARUKAZE48</span>
         </div>
 
         {/* Desktop: right side */}
