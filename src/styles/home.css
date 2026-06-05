@@ -28,16 +28,14 @@
 }
 
 /* ── Page Container ────────────────────────────────────────── */
-/* ── Page Container ────────────────────────────────────────── */
 .home-page {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   min-height: 100vh;
-  background: 
-    linear-gradient(rgba(10, 10, 15, 0.85), rgba(10, 10, 15, 0.92)),
-    url('https://files.catbox.moe/x921sb.jpg') center center / cover fixed;
+  background: var(--home-bg);
   display: flex;
   flex-direction: column;
 }
+
 
 .home-content {
   width: 100%;
