@@ -995,26 +995,37 @@ const styles = `
     padding-bottom: 16px; border-bottom: 1px solid var(--line);
   }
 
-  /* ── Responsive ── */
-  @media (max-width: 900px) {
-    .hkz-stats { grid-template-columns: repeat(2, 1fr); }
+/* ganti seluruh blok @media (max-width: 640px) yang ada */
+@media (max-width: 640px) {
+  .hkz-header {
+    height: auto;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
   }
-  @media (max-width: 640px) {
-    .hkz-header { padding: 0 14px; height: 52px; }
-    .hkz-header-right { gap: 6px; }
-    .hkz-header-right button { padding: 6px 10px !important; font-size: 11px !important; }
-    .hkz-page { padding: 14px 12px 60px; gap: 14px; }
-    .hkz-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-    .hkz-stat-card { padding: 14px 16px; }
-    .hkz-card { padding: 14px; }
-    .hkz-filters { gap: 8px; }
-    .hkz-filters input,
-    .hkz-filters select { max-width: 100% !important; font-size: 12px; }
-    .hkz-tabs { width: 100%; }
-    .hkz-tab { flex: 1; padding: 8px 10px; font-size: 12px; }
-    .hkz-login-card { padding: 24px 20px; }
+  .hkz-header-left {
+    padding: 0 14px;
+    height: 48px;
   }
-  @media (max-width: 480px) {
-    .hkz-stats { grid-template-columns: 1fr 1fr; }
+  .hkz-header-right {
+    display: flex;
+    gap: 8px;
+    padding: 8px 14px 10px;
+    border-top: 1px solid var(--line);
   }
+  .hkz-header-right button:last-child {
+    /* tombol Logout pindah ke header-left, jadi sembunyikan di sini */
+    display: none;
+  }
+  .hkz-page { padding: 14px 12px 60px; gap: 14px; }
+  .hkz-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .hkz-stat-card { padding: 14px 16px; }
+  .hkz-card { padding: 14px; }
+  .hkz-filters { gap: 8px; }
+  .hkz-filters input,
+  .hkz-filters select { max-width: 100% !important; font-size: 12px; }
+  .hkz-tabs { width: 100%; }
+  .hkz-tab { flex: 1; padding: 8px 10px; font-size: 12px; }
+  .hkz-login-card { padding: 24px 20px; }
+}
 `;
