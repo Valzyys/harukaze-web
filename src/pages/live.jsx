@@ -9,8 +9,14 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://mzxfuaoihgzxvo
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16eGZ1YW9paGd6eHZva3dhcmFvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0MDg0NjIsImV4cCI6MjA4OTk4NDQ2Mn0.OFYCkBFXCSfLn-wG94OHHKL5CX8T_BLrbDGPiBdPIog";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const API_BASE = "https://v2.jkt48connect.com/api/jkt48connect";
-const API_KEY  = "JKTCONNECT";
+const HARUKAZE_API = "https://v5.jkt48connect.com/api/harukaze";
+const HARUKAZE_KEY = "JKTCONNECT";
+
+const harukazeFetch = async (path, opts = {}) => {
+  const url = `${HARUKAZE_API}${path}${path.includes("?") ? "&" : "?"}apikey=${HARUKAZE_KEY}`;
+  const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
+  return res.json();
+};
 
 const isSlugParam = (param) => {
   if (!param) return false;
@@ -261,86 +267,92 @@ function LiveStream() {
     }
   }, []);
 
-  const verifyAccess = async () => {
-    if (!verificationData.email || !verificationData.code) {
-      setVerificationError("Email dan code wajib diisi"); return;
-    }
-    setVerifying(true); setVerificationError("");
-    try {
-      const ip = clientIP || (await fetchClientIP());
-      const verifyResponse = await fetch("https://v2.jkt48connect.com/api/codes/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: verificationData.email, code: verificationData.code, apikey: "JKTCONNECT" }),
-      });
-      const verifyData = await verifyResponse.json();
-      if (!verifyData.status) {
-        setVerificationError(verifyData.message || "Code tidak valid atau sudah kedaluwarsa");
-        setVerifying(false); return;
-      }
-      const codeData = verifyData.data;
-      if (!codeData.is_active) {
-        setVerificationError("Code ini sudah tidak aktif"); setVerifying(false); return;
-      }
-      const usageCount        = parseInt(codeData.usage_count) || 0;
-      const usageLimit        = parseInt(codeData.usage_limit)  || 1;
-      const hasUsageRemaining = usageCount < usageLimit;
-      if (codeData.is_used && !hasUsageRemaining) {
-        const listResponse = await fetch(
-          `https://v2.jkt48connect.com/api/codes/list?email=${verificationData.email}&apikey=JKTCONNECT`
-        );
-        const listData = await listResponse.json();
-        if (listData.status && listData.data.wotatokens) {
-          const userCode = listData.data.wotatokens.find((c) => c.code === verificationData.code);
-          if (userCode) {
-            if (userCode.ip_address && userCode.ip_address !== "" && userCode.ip_address !== ip) {
-              setVerificationError("Code ini sudah digunakan dari IP address yang berbeda");
-              setVerifying(false); return;
-            }
-            localStorage.setItem("stream_verification", JSON.stringify({ email: verificationData.email, code: verificationData.code, ip, timestamp: Date.now(), verified: true }));
-            setIsVerified(true); setShowVerification(false); setVerifying(false); return;
-          }
-        }
-        setVerificationError("Code sudah tidak dapat digunakan"); setVerifying(false); return;
-      }
-      const useResponse = await fetch("https://v2.jkt48connect.com/api/codes/use", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: verificationData.email, code: verificationData.code, apikey: "JKTCONNECT" }),
-      });
-      const useData = await useResponse.json();
-      if (useData.status) {
-        localStorage.setItem("stream_verification", JSON.stringify({ email: verificationData.email, code: verificationData.code, ip, timestamp: Date.now(), verified: true }));
-        setIsVerified(true); setShowVerification(false); setVerifying(false);
-      } else {
-        setVerificationError(useData.message || "Gagal menggunakan code"); setVerifying(false);
-      }
-    } catch {
-      setVerificationError("Terjadi kesalahan saat verifikasi. Silakan coba lagi."); setVerifying(false);
-    }
-  };
+ const verifyAccess = async () => {
+  if (!verificationData.email) {
+    setVerificationError("Email wajib diisi");
+    return;
+  }
+  setVerifying(true);
+  setVerificationError("");
+  try {
+    // Cek apakah email punya akses valid
+    const verifyRes = await harukazeFetch("/verify", {
+      method: "POST",
+      body: JSON.stringify({ email: verificationData.email }),
+    });
 
-    const checkExistingVerification = async () => {
-    const stored = localStorage.getItem("stream_verification");
-    if (!stored) { setShowVerification(true); return false; }
-    try {
-      const info = JSON.parse(stored);
-      if (!info.verified || !info.timestamp) {
-        localStorage.removeItem("stream_verification"); setShowVerification(true); return false;
-      }
-      const hoursDiff = (Date.now() - info.timestamp) / (1000 * 60 * 60);
-      if (hoursDiff > 5) {
-        localStorage.removeItem("stream_verification"); setShowVerification(true); return false;
-      }
-      const ip = await fetchClientIP();
-      if (info.ip !== ip) { info.ip = ip; localStorage.setItem("stream_verification", JSON.stringify(info)); }
-      setIsVerified(true); setShowVerification(false);
-      setVerificationData({ email: info.email, code: info.code });
-      return true;
-    } catch {
-      localStorage.removeItem("stream_verification"); setShowVerification(true); return false;
+    if (!verifyRes.status || !verifyRes.has_access) {
+      setVerificationError(verifyRes.message || "Email tidak memiliki akses valid");
+      setVerifying(false);
+      return;
     }
-  };
+
+    // Gunakan 1 slot akses
+    const useRes = await harukazeFetch("/use", {
+      method: "POST",
+      body: JSON.stringify({ email: verificationData.email }),
+    });
+
+    if (!useRes.status) {
+      setVerificationError(useRes.message || "Gagal menggunakan akses");
+      setVerifying(false);
+      return;
+    }
+
+    localStorage.setItem(
+      "stream_verification",
+      JSON.stringify({
+        email: verificationData.email,
+        accessId: useRes.data?.id,
+        timestamp: Date.now(),
+        verified: true,
+      })
+    );
+    setIsVerified(true);
+    setShowVerification(false);
+    setVerifying(false);
+  } catch {
+    setVerificationError("Terjadi kesalahan saat verifikasi. Silakan coba lagi.");
+    setVerifying(false);
+  }
+};
+
+   const checkExistingVerification = async () => {
+  const stored = localStorage.getItem("stream_verification");
+  if (!stored) { setShowVerification(true); return false; }
+  try {
+    const info = JSON.parse(stored);
+    if (!info.verified || !info.timestamp || !info.email) {
+      localStorage.removeItem("stream_verification");
+      setShowVerification(true);
+      return false;
+    }
+    const hoursDiff = (Date.now() - info.timestamp) / (1000 * 60 * 60);
+    if (hoursDiff > 5) {
+      localStorage.removeItem("stream_verification");
+      setShowVerification(true);
+      return false;
+    }
+    // Re-verify email masih punya akses
+    const verifyRes = await harukazeFetch("/verify", {
+      method: "POST",
+      body: JSON.stringify({ email: info.email }),
+    });
+    if (!verifyRes.status || !verifyRes.has_access) {
+      localStorage.removeItem("stream_verification");
+      setShowVerification(true);
+      return false;
+    }
+    setIsVerified(true);
+    setShowVerification(false);
+    setVerificationData({ email: info.email, code: "" });
+    return true;
+  } catch {
+    localStorage.removeItem("stream_verification");
+    setShowVerification(true);
+    return false;
+  }
+};
 
   const fetchNearestShow = async () => {
     try {
@@ -628,13 +640,16 @@ function LiveStream() {
   };
   const handleVerificationSubmit = (e) => { e.preventDefault(); verifyAccess(); };
   const goBack                   = () => navigate(-1);
-  const handleLogout             = () => {
-    localStorage.removeItem("stream_verification");
-    setIsVerified(false); setShowVerification(true);
-    setStreamData(null); setHlsUrl(""); setAvailableStreams([]);
-    setVerificationData({ email: "", code: "" });
-    setIdnLiveShow(null);
-  };
+  const handleLogout = () => {
+  localStorage.removeItem("stream_verification");
+  setIsVerified(false);
+  setShowVerification(true);
+  setStreamData(null);
+  setHlsUrl("");
+  setAvailableStreams([]);
+  setVerificationData({ email: "", code: "" }); // code tetap ada di state tapi tidak dipakai
+  setIdnLiveShow(null);
+};
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!chatInput.trim() || !chatUser) return;
@@ -667,51 +682,60 @@ function LiveStream() {
   }
 
     if (showVerification && !isVerified) {
-    return (
-      <div className="verification-page">
-        <div className="verification-container">
-          <div className="verification-card">
-            <h1>Verifikasi Akses</h1>
-            <p>Masukkan email dan code untuk mengakses live stream</p>
-            <form onSubmit={handleVerificationSubmit}>
-              <div className="form-group">
-                <label>Email</label>
-                <input type="email" name="email" value={verificationData.email} onChange={handleInputChange} placeholder="email@example.com" required />
-              </div>
-              <div className="form-group">
-                <label>Verification Code</label>
-                <input type="text" name="code" value={verificationData.code} onChange={handleInputChange} placeholder="Masukkan code" required />
-              </div>
-              {verificationError && <div className="error-message">{verificationError}</div>}
-              {verifying
-                ? <button type="button" className="verify-button" disabled><span className="spinner"></span> Memverifikasi...</button>
-                : <button type="submit" className="verify-button">✓ Verifikasi Akses</button>
-              }
-            </form>
-            <div className="verification-info">
-              <p>!<strong>Informasi:</strong></p>
-              <ul>
-                <li>Code verifikasi hanya dapat digunakan sekali</li>
-                <li>IP address akan dicatat untuk keamanan</li>
-                <li>Akses berlaku selama 5 jam</li>
-                <li>Session tetap aktif saat refresh halaman</li>
-                <li>
-                  Punya membership monthly?{" "}
-                  <span
-                    style={{ color: "#DC1F2E", cursor: "pointer", fontWeight: 700 }}
-                    onClick={() => navigate("/login")}
-                  >
-                    Login di sini
-                  </span>
-                </li>
-              </ul>
+  return (
+    <div className="verification-page">
+      <div className="verification-container">
+        <div className="verification-card">
+          <h1>Verifikasi Akses</h1>
+          <p>Masukkan email yang sudah didaftarkan untuk mengakses live stream</p>
+          <form onSubmit={handleVerificationSubmit}>
+            <div className="form-group">
+              <label>Email</label>
+              <input
+                type="email"
+                name="email"
+                value={verificationData.email}
+                onChange={handleInputChange}
+                placeholder="email@example.com"
+                required
+              />
             </div>
-            <button onClick={goBack} className="back-button">← Kembali</button>
+            {verificationError && (
+              <div className="error-message">{verificationError}</div>
+            )}
+            {verifying
+              ? <button type="button" className="verify-button" disabled>
+                  <span className="spinner"></span> Memverifikasi...
+                </button>
+              : <button type="submit" className="verify-button">
+                  ✓ Verifikasi Akses
+                </button>
+            }
+          </form>
+          <div className="verification-info">
+            <p>!<strong>Informasi:</strong></p>
+            <ul>
+              <li>Email harus terdaftar dan memiliki akses aktif</li>
+              <li>Setiap verifikasi akan menggunakan 1 slot akses</li>
+              <li>Akses berlaku selama 5 jam</li>
+              <li>Session tetap aktif saat refresh halaman</li>
+              <li>
+                Punya membership monthly?{" "}
+                <span
+                  style={{ color: "#DC1F2E", cursor: "pointer", fontWeight: 700 }}
+                  onClick={() => navigate("/login")}
+                >
+                  Login di sini
+                </span>
+              </li>
+            </ul>
           </div>
+          <button onClick={goBack} className="back-button">← Kembali</button>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   if (loading || fetchingIdnShow) {
     return (
