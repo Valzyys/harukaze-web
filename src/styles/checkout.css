@@ -1,0 +1,127 @@
+.checkout.container {
+  max-width: 600px;
+  margin: 40px auto;
+  padding: 30px;
+  font-family: "Roboto", Arial, sans-serif;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.checkout h2 {
+  text-align: center;
+  font-size: 26px;
+  color: #202124;
+  margin-bottom: 30px;
+}
+
+.invoice-section {
+  margin-bottom: 25px;
+}
+
+.invoice-section h3 {
+  font-size: 18px;
+  margin-bottom: 10px;
+  color: #3c4043;
+  border-bottom: 1px solid #dadce0;
+  padding-bottom: 5px;
+}
+
+.invoice-section p {
+  margin: 5px 0;
+  font-size: 15px;
+  color: #5f6368;
+}
+
+.invoice-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+}
+
+.invoice-table td {
+  padding: 8px 6px;
+  font-size: 15px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.invoice-table .total-row td {
+  font-size: 16px;
+  color: #d6001c;
+  border-top: 2px solid #d6001c;
+}
+
+.btn-pay {
+  width: 100%;
+  padding: 12px;
+  font-size: 16px;
+  font-weight: bold;
+  color: #fff;
+  background-color: #1a73e8;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-top: 20px;
+  transition: background-color 0.2s;
+}
+
+.btn-pay {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 24px;
+  font-size: 16px;
+  background: #27ae60;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: 0.3s;
+}
+
+.btn-pay:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.btn-loader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.loader-ring {
+  width: 18px;
+  height: 18px;
+  border: 3px solid #fff;
+  border-top: 3px solid transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 768px) {
+  .checkout.container {
+    padding: 20px;
+    margin: 20px;
+  }
+
+  .checkout h2 {
+    font-size: 22px;
+  }
+
+  .invoice-section p,
+  .invoice-table td {
+    font-size: 14px;
+  }
+
+  .btn-pay {
+    font-size: 15px;
+  }
+}

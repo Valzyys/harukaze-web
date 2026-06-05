@@ -1,0 +1,526 @@
+/* liveShow.css */
+
+/* Live Show Section */
+.live-show-section,
+.replay-show-section {
+  margin-top: 40px;
+  margin-bottom: 40px;
+}
+
+/* Checking Live Status */
+.checking-live-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  background: transparent; /* FIXED: Removed background */
+}
+
+.checking-live-status p {
+  margin-top: 16px;
+  color: rgba(255, 255, 255, 0.7); /* FIXED: Changed to white/transparent */
+  font-size: 16px;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid rgba(255, 255, 255, 0.1); /* FIXED: Changed to transparent white */
+  border-top: 4px solid #e50914; /* FIXED: Changed to red theme */
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* No Live Shows */
+.no-live-shows {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  background: transparent; /* FIXED: Removed gray background */
+  border-radius: 16px;
+  margin-bottom: 40px;
+}
+
+.no-live-icon {
+  margin-bottom: 20px;
+  opacity: 0.6;
+}
+
+.no-live-shows h3 {
+  font-size: 24px;
+  font-weight: 700;
+  color: #ffffff; /* FIXED: Changed to white */
+  margin: 0 0 12px 0;
+}
+
+.no-live-shows p {
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.6); /* FIXED: Changed to white/transparent */
+  margin: 0 0 24px 0;
+  max-width: 400px;
+}
+
+.notify-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: rgba(255, 255, 255, 0.1); /* FIXED: Changed to transparent white */
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.2); /* FIXED: Added border */
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.notify-btn:hover {
+  background: rgba(255, 255, 255, 0.15); /* FIXED: Changed hover */
+  border-color: rgba(255, 255, 255, 0.3);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.notify-btn:active {
+  transform: translateY(0);
+}
+
+.live-count-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #ff0000, #ff4444);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 20px;
+  margin-left: 12px;
+  animation: pulse 2s infinite;
+}
+
+/* Replay Count Badge - STYLE BARU */
+.replay-count-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 20px;
+  margin-left: 12px;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.05);
+  }
+}
+
+/* Live Show Grid */
+.live-show-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+  margin-bottom: 40px;
+}
+
+/* Live Show Card */
+.live-show-card {
+  background: rgba(255, 255, 255, 0.05); /* FIXED: Changed to transparent dark */
+  border: 1px solid rgba(255, 255, 255, 0.1); /* FIXED: Added border */
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3); /* FIXED: Darker shadow */
+  transition: all 0.3s ease;
+  cursor: pointer;
+  backdrop-filter: blur(10px); /* FIXED: Added blur effect */
+}
+
+.live-show-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5); /* FIXED: Darker shadow */
+  border-color: rgba(229, 9, 20, 0.5); /* FIXED: Red border on hover */
+}
+
+/* Thumbnail */
+.live-show-thumbnail {
+  position: relative;
+  width: 100%;
+  padding-top: 56.25%; /* 16:9 Aspect Ratio */
+  overflow: hidden;
+  background: #000;
+}
+
+.live-show-thumbnail img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.live-show-card:hover .live-show-thumbnail img {
+  transform: scale(1.05);
+}
+
+/* Live Badge */
+.live-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: #ff0000;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 2;
+  box-shadow: 0 2px 8px rgba(255, 0, 0, 0.4);
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  background: white;
+  border-radius: 50%;
+  animation: blink 1.5s infinite;
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Duration Badge - STYLE BARU UNTUK REPLAY */
+.duration-badge {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.85);
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+/* Views Badge - STYLE BARU UNTUK REPLAY */
+.views-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.75);
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+/* Viewer Count */
+.viewer-count {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.75);
+  color: white;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+/* Play Overlay */
+.play-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.3s ease;
+  z-index: 1;
+}
+
+.live-show-card:hover .play-overlay {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.play-button {
+  transform: scale(0.8);
+  transition: transform 0.3s ease;
+}
+
+.live-show-card:hover .play-button {
+  transform: scale(1);
+}
+
+/* Live Show Info */
+.live-show-info {
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03); /* FIXED: Added subtle background */
+}
+
+.live-show-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #ffffff; /* FIXED: Changed to white */
+  margin: 0 0 8px 0;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-show-host {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7); /* FIXED: Changed to white/transparent */
+  margin: 0 0 12px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Watch Live Button */
+.watch-live-btn {
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.watch-live-btn.live {
+  background: linear-gradient(135deg, #ff0000, #ff4444);
+  color: white;
+}
+
+.watch-live-btn.live:hover {
+  background: linear-gradient(135deg, #cc0000, #ff2222);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(255, 0, 0, 0.3);
+}
+
+/* Watch Replay Button - STYLE BARU */
+.watch-live-btn.replay {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+}
+
+.watch-live-btn.replay:hover {
+  background: linear-gradient(135deg, #5568d3, #63408a);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.watch-live-btn.offline {
+  background: rgba(255, 255, 255, 0.1); /* FIXED: Changed to transparent */
+  color: rgba(255, 255, 255, 0.7); /* FIXED: Changed to white */
+  border: 1px solid rgba(255, 255, 255, 0.2); /* FIXED: Added border */
+}
+
+.watch-live-btn.offline:hover {
+  background: rgba(255, 255, 255, 0.15); /* FIXED: Changed hover */
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Replay Card Specific Styles */
+.replay-card {
+  border: 1px solid rgba(102, 126, 234, 0.2); /* FIXED: Changed to transparent purple */
+}
+
+.replay-card:hover {
+  border-color: rgba(102, 126, 234, 0.5); /* FIXED: Brighter on hover */
+}
+
+/* Tablet Styles */
+@media (max-width: 768px) {
+  .live-show-grid {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 16px;
+  }
+
+  .live-show-title {
+    font-size: 15px;
+  }
+
+  .live-show-host {
+    font-size: 12px;
+  }
+
+  .live-badge {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+
+  .viewer-count,
+  .views-badge {
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+
+  .duration-badge {
+    padding: 3px 6px;
+    font-size: 10px;
+  }
+
+  .live-count-badge,
+  .replay-count-badge {
+    font-size: 11px;
+    padding: 3px 10px;
+  }
+}
+
+/* Mobile Styles */
+@media (max-width: 480px) {
+  .live-show-section,
+  .replay-show-section {
+    margin-top: 30px;
+  }
+
+  .checking-live-status {
+    padding: 40px 20px;
+  }
+
+  .checking-live-status p {
+    font-size: 14px;
+  }
+
+  .spinner {
+    width: 32px;
+    height: 32px;
+    border-width: 3px;
+  }
+
+  .no-live-shows {
+    padding: 40px 20px;
+  }
+
+  .no-live-icon svg {
+    width: 60px;
+    height: 60px;
+  }
+
+  .no-live-shows h3 {
+    font-size: 20px;
+  }
+
+  .no-live-shows p {
+    font-size: 14px;
+  }
+
+  .notify-btn {
+    padding: 10px 20px;
+    font-size: 13px;
+  }
+
+  .live-count-badge,
+  .replay-count-badge {
+    font-size: 10px;
+    padding: 3px 10px;
+    margin-left: 8px;
+  }
+
+  .live-show-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .live-show-info {
+    padding: 12px;
+  }
+
+  .live-show-title {
+    font-size: 14px;
+  }
+
+  .live-show-host {
+    font-size: 11px;
+  }
+
+  .watch-live-btn {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .live-badge {
+    top: 8px;
+    left: 8px;
+    padding: 4px 8px;
+    font-size: 10px;
+  }
+
+  .viewer-count,
+  .views-badge {
+    top: 8px;
+    right: 8px;
+    padding: 4px 6px;
+    font-size: 10px;
+  }
+
+  .duration-badge {
+    bottom: 8px;
+    right: 8px;
+    padding: 3px 6px;
+    font-size: 9px;
+  }
+
+  .viewer-count svg,
+  .views-badge svg,
+  .duration-badge svg {
+    width: 10px;
+    height: 10px;
+  }
+
+  .play-button svg {
+    width: 32px;
+    height: 32px;
+  }
+}

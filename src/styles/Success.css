@@ -1,0 +1,90 @@
+.success-container {
+  max-width: 500px;
+  margin: 60px auto;
+  text-align: center;
+  font-family: Arial, sans-serif;
+  background: #fff;
+  padding: 40px 20px;
+  border-radius: 10px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+
+.checkmark-wrapper {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 20px;
+  border-radius: 50%;
+  background: #e6f4ea;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  animation: pop 0.5s ease forwards;
+}
+
+.checkmark {
+  font-size: 48px;
+  color: #2e7d32;
+  opacity: 0;
+  transform: scale(0);
+  animation: checkmark-pop 0.5s 0.3s forwards;
+}
+
+@keyframes pop {
+  0% { transform: scale(0.5); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes checkmark-pop {
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.success-container h2 {
+  font-size: 24px;
+  margin-bottom: 10px;
+  color: #800000;
+}
+
+.success-container p {
+  font-size: 15px;
+  margin-bottom: 25px;
+  color: #800000;
+}
+
+.success-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 15px;
+}
+
+.success-buttons button {
+  padding: 10px 20px;
+  font-size: 15px;
+  font-weight: bold;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+.success-buttons button:first-child {
+  background-color: #800000;
+  color: #fff;
+}
+
+.success-buttons button:first-child:hover {
+  background-color: #660000; 
+}
+
+.success-buttons button:last-child {
+  background-color: transparent;
+  color: #800000; 
+  border: 2px solid #800000;
+}
+
+.success-buttons button:last-child:hover {
+  background-color: #800000; 
+  color: #fff;
+}
