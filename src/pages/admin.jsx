@@ -695,30 +695,23 @@ export default function AdminHarukaze() {
       <style>{styles}</style>
 
       {/* Header */}
-     <header className="hkz-header">
+    <header className="hkz-header">
   <div className="hkz-header-left">
     <div className="hkz-brand-icon sm">風</div>
     <span className="hkz-header-title">Harukaze48</span>
     <span className="hkz-admin-badge">ADMIN</span>
-    {/* Logout pindah ke sini, tapi di desktop tetap di kanan via margin-left auto */}
-    <button
-      onClick={() => { sessionStorage.removeItem("hkz_auth"); setAuthed(false); }}
-      style={{
-        marginLeft: "auto",
-        background: "none", border: "1px solid var(--line)",
-        color: "var(--txt3)", borderRadius: 8, padding: "7px 14px",
-        fontSize: 12, cursor: "pointer", fontFamily: "inherit",
-      }}>
-      Logout
-    </button>
   </div>
   <div className="hkz-header-right">
-    <button onClick={() => setShowGrant(true)} style={{ ...btnPrimaryStyle, padding: "7px 14px", fontSize: 12, flex: 1 }}>
+    <button onClick={() => setShowGrant(true)} style={{ ...btnPrimaryStyle, padding: "7px 14px", fontSize: 12 }}>
       + Grant Akses
     </button>
     <button onClick={() => setShowBlacklist(true)}
-      style={{ flex: 1, background: "#DC1F2E18", border: "1px solid #DC1F2E44", color: "#DC1F2E", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+      style={{ background: "#DC1F2E18", border: "1px solid #DC1F2E44", color: "#DC1F2E", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
       Blacklist
+    </button>
+    <button onClick={() => { sessionStorage.removeItem("hkz_auth"); setAuthed(false); }}
+      style={{ background: "none", border: "1px solid var(--line)", color: "var(--txt3)", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+      Logout
     </button>
   </div>
 </header>
@@ -940,15 +933,18 @@ const styles = `
   .hkz-brand-sub  { font-size: 12px; color: var(--txt3); margin-top: 2px; }
 
   /* ── Header ── */
-  .hkz-header {
-    position: sticky; top: 0; z-index: 200;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 24px; height: 56px;
-    background: var(--bg2); border-bottom: 1px solid var(--line);
-    backdrop-filter: blur(12px);
-  }
-  .hkz-header-left  { display: flex; align-items: center; gap: 10px; }
-  .hkz-header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* ── Header ── */
+.hkz-header {
+  position: sticky; top: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; min-height: 56px;           /* min-height, bukan height */
+  background: var(--bg2); border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+  flex-wrap: wrap;                              /* izinkan wrap */
+  gap: 8px;
+}
+.hkz-header-left  { display: flex; align-items: center; gap: 10px; }
+.hkz-header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .hkz-header-title { font-family: var(--display); font-size: 15px; font-weight: 800; letter-spacing: 1px; }
   .hkz-admin-badge  {
     background: var(--accent); color: #fff;
@@ -1005,25 +1001,32 @@ const styles = `
 /* ganti seluruh blok @media (max-width: 640px) yang ada */
 @media (max-width: 640px) {
   .hkz-header {
+    padding: 10px 14px;
+    min-height: unset;
     height: auto;
     flex-direction: column;
     align-items: stretch;
-    padding: 0;
+    gap: 0;
   }
   .hkz-header-left {
-    padding: 0 14px;
-    height: 48px;
+    padding-bottom: 10px;
   }
   .hkz-header-right {
-    display: flex;
-    gap: 8px;
-    padding: 8px 14px 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;   /* 3 kolom equal */
+    gap: 6px;
+    padding-top: 10px;
     border-top: 1px solid var(--line);
+    width: 100%;
   }
-  .hkz-header-right button:last-child {
-    /* tombol Logout pindah ke header-left, jadi sembunyikan di sini */
-    display: none;
+  .hkz-header-right button {
+    padding: 8px 6px !important;
+    font-size: 11px !important;
+    justify-content: center;
+    width: 100%;
   }
+
+  /* sisanya tetap sama */
   .hkz-page { padding: 14px 12px 60px; gap: 14px; }
   .hkz-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .hkz-stat-card { padding: 14px 16px; }
