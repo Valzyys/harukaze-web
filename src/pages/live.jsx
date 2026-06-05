@@ -8,14 +8,26 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://mzxfuaoihgzxvo
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16eGZ1YW9paGd6eHZva3dhcmFvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0MDg0NjIsImV4cCI6MjA4OTk4NDQ2Mn0.OFYCkBFXCSfLn-wG94OHHKL5CX8T_BLrbDGPiBdPIog";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+const API_BASE = "https://v2.jkt48connect.com/api/jkt48connect";
+const API_KEY  = "JKTCONNECT";
+
 const HARUKAZE_API = "https://v5.jkt48connect.com/api/harukaze";
 const HARUKAZE_KEY = "JKTCONNECT";
+
+const harukazeFetch = async (path, opts = {}) => {
+  const url = `${HARUKAZE_API}${path}${path.includes("?") ? "&" : "?"}apikey=${HARUKAZE_KEY}`;
+  const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
+  return res.json();
+};
+
+// ── GiStream token constants ──────────────────────────────────────────────────
 const TOKEN_API_BASE = "https://v5.jkt48connect.com";
 const CTV_BASE       = "https://ctv.jkt48connect.com";
 const SIGNING_PATH   = "/api/token/generate?apikey=JKTCONNECT";
 const PARTNER_KID    = "jkt48connect-v1";
 const PARTNER_SECRET = "gstream@jkt48connect@2108";
 
+// ── HMAC helpers (browser SubtleCrypto) ──────────────────────────────────────
 async function sha256Hex(str) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
@@ -57,7 +69,7 @@ async function generateStreamToken(slugOrId, isSlug) {
   });
   const text = await res.text();
   let data;
-  try { data = JSON.parse(text); } catch { throw new Error("Token server returned non-JSON"); }
+  try { data = JSON.parse(text); } catch { throw new Error("Token server returned non-JSON response"); }
   if (!data.status) throw new Error("Generate token gagal: " + data.message);
   return data.data.token;
 }
@@ -75,7 +87,7 @@ async function getStreamURL(token, slugOrId, isSlug) {
 
   const streams = data.streams || [];
   const sorted = streams
-    .filter(s => s?.url)
+    .filter(s => s && typeof s.url === "string" && s.url.length > 0)
     .sort((a, b) => parseInt(b.BANDWIDTH || 0) - parseInt(a.BANDWIDTH || 0));
 
   const autoUrl = sorted[0]?.url || "";
@@ -98,12 +110,6 @@ async function getStreamURL(token, slugOrId, isSlug) {
   return { url: autoUrl, qualities };
 }
 
-const harukazeFetch = async (path, opts = {}) => {
-  const url = `${HARUKAZE_API}${path}${path.includes("?") ? "&" : "?"}apikey=${HARUKAZE_KEY}`;
-  const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
-  return res.json();
-};
-
 const isSlugParam = (param) => {
   if (!param) return false;
   if (/\d{4}-\d{2}-\d{2}/.test(param)) return true;
@@ -111,62 +117,54 @@ const isSlugParam = (param) => {
   return false;
 };
 
-// ── Resolution Selector ────────────────────────────────────────────────────────
-function ResolutionSelector({ streams, currentUrl, onSelect }) {
-  if (!streams || streams.length === 0) return null;
-
-  const formatBandwidth = (bw) => {
-    const num = parseInt(bw) || 0;
-    if (num >= 1000000) return (num / 1000000).toFixed(1) + " Mbps";
-    if (num >= 1000) return Math.round(num / 1000) + " Kbps";
-    return num + " bps";
-  };
-
-  return (
-    <div className="resolution-selector">
-      <span className="resolution-label">Resolusi:</span>
-      {streams.map((stream) => {
-        const isActive = currentUrl === stream.url;
-        return (
-          <button
-            key={stream["GROUP-ID"]}
-            className={`resolution-btn${isActive ? " active" : ""}`}
-            onClick={() => onSelect(stream)}
-            title={`${stream.RESOLUTION} @ ${stream["FRAME-RATE"]}fps — ${formatBandwidth(stream.BANDWIDTH)}`}
-          >
-            {stream.NAME}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 // ── HLS Player ─────────────────────────────────────────────────────────────────
 function HlsPlayer({ src, title, streams, onResolutionChange, token }) {
   const videoRef = useRef(null);
   const hlsRef   = useRef(null);
+  const retryRef = useRef(null);
   const [showQualityPanel, setShowQualityPanel] = useState(false);
   const [currentLevelName, setCurrentLevelName] = useState("Auto");
-  const [bandwidth, setBandwidth] = useState("");
+  const [bandwidth, setBandwidth]               = useState("");
+
+  const destroyHls = useCallback(() => {
+    if (retryRef.current) { clearTimeout(retryRef.current); retryRef.current = null; }
+    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
 
-    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+    destroyHls();
 
     if (Hls.isSupported()) {
       const hls = new Hls({
-        enableWorker:           true,
-        lowLatencyMode:         false,
-        maxBufferLength:        30,
-        maxMaxBufferLength:     60,
-        liveSyncDurationCount:  3,
+        enableWorker:                true,
+        lowLatencyMode:              false,
+        maxBufferLength:             30,
+        maxMaxBufferLength:          60,
+        maxBufferSize:               60 * 1000 * 1000,
+        backBufferLength:            30,
+        liveSyncDurationCount:       3,
         liveMaxLatencyDurationCount: 10,
-        liveDurationInfinity:   true,
-        fragLoadingMaxRetry:    6,
-        fragLoadingRetryDelay:  1000,
+        liveDurationInfinity:        true,
+        fragLoadingTimeOut:          10000,
+        fragLoadingMaxRetry:         6,
+        fragLoadingRetryDelay:       1000,
+        fragLoadingMaxRetryTimeout:  8000,
+        manifestLoadingTimeOut:      10000,
+        manifestLoadingMaxRetry:     4,
+        manifestLoadingRetryDelay:   1000,
+        levelLoadingTimeOut:         10000,
+        levelLoadingMaxRetry:        4,
+        levelLoadingRetryDelay:      1000,
+        abrEwmaDefaultEstimate:      500_000,
+        abrBandWidthFactor:          0.8,
+        abrBandWidthUpFactor:        0.7,
+        abrEwmaFastLive:             3.0,
+        abrEwmaSlowLive:             9.0,
+        nudgeOffset:                 0.3,
+        nudgeMaxRetry:               5,
         ...(token && {
           xhrSetup: (xhr) => {
             xhr.setRequestHeader("x-api-token", token);
@@ -180,7 +178,9 @@ function HlsPlayer({ src, title, streams, onResolutionChange, token }) {
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.play().catch(() => {});
+      });
       hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
         const lvl = hls.levels[data.level];
         if (lvl) {
@@ -195,23 +195,48 @@ function HlsPlayer({ src, title, streams, onResolutionChange, token }) {
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else hls.destroy();
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad();
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+        } else {
+          destroyHls();
+          retryRef.current = setTimeout(() => {
+            const v = videoRef.current;
+            if (!v) return;
+            const newHls = new Hls({
+              lowLatencyMode:  false,
+              maxBufferLength: 30,
+              ...(token && {
+                xhrSetup: (xhr) => { xhr.setRequestHeader("x-api-token", token); },
+                fetchSetup: (context, initParams) => {
+                  initParams.headers = { ...initParams.headers, "x-api-token": token };
+                  return new Request(context.url, initParams);
+                },
+              }),
+            });
+            newHls.loadSource(src);
+            newHls.attachMedia(v);
+            newHls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+            hlsRef.current = newHls;
+          }, 2000);
+        }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = src;
       video.addEventListener("loadedmetadata", () => { video.play().catch(() => {}); });
     }
 
-    return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
-  }, [src, token]);
+    return destroyHls;
+  }, [src, token, destroyHls]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <video
         ref={videoRef}
-        controls autoPlay playsInline
+        controls
+        autoPlay
+        playsInline
         style={{ width: "100%", height: "100%", background: "#000", borderRadius: "8px" }}
         title={title}
       />
@@ -235,6 +260,7 @@ function HlsPlayer({ src, title, streams, onResolutionChange, token }) {
               position: "absolute", bottom: "calc(100% + 8px)", right: 0,
               background: "rgba(17,17,27,0.97)", border: "1px solid rgba(255,255,255,0.1)",
               borderRadius: "12px", padding: "8px", minWidth: "180px",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
             }}>
               <p style={{ fontSize: "9px", fontWeight: 700, color: "rgba(255,255,255,0.3)", padding: "0 8px 8px", textTransform: "uppercase", letterSpacing: "1px", margin: 0 }}>Kualitas</p>
               {streams.map((q, i) => (
@@ -295,13 +321,14 @@ function LiveStream() {
   const [members,        setMembers]        = useState([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
 
-  const [hlsUrl,           setHlsUrl]           = useState("");
-  const [isSlugMode,       setIsSlugMode]        = useState(false);
-  const [availableStreams,  setAvailableStreams]  = useState([]);
+  const [hlsUrl,          setHlsUrl]          = useState("");
+  const [isSlugMode,      setIsSlugMode]       = useState(false);
+  const [availableStreams, setAvailableStreams] = useState([]);
+  const [streamToken,     setStreamToken]      = useState("");
 
-  // ── State baru untuk IDN Plus live show ──────────────────────────────────
-  const [idnLiveShow,      setIdnLiveShow]      = useState(null);
-  const [fetchingIdnShow,  setFetchingIdnShow]  = useState(false);
+  // ── State untuk IDN Plus live show ────────────────────────────────────────
+  const [idnLiveShow,     setIdnLiveShow]     = useState(null);
+  const [fetchingIdnShow, setFetchingIdnShow] = useState(false);
 
   const [chatMessages,    setChatMessages]    = useState([]);
   const [chatInput,       setChatInput]       = useState("");
@@ -310,11 +337,6 @@ function LiveStream() {
   const chatEndRef  = useRef(null);
   const channelRef  = useRef(null);
 
-  const [streamToken,    setStreamToken]    = useState("");
-  const [qualityMode,    setQualityMode]    = useState("auto");
-  const [currentQuality, setCurrentQuality] = useState(null);
-  const [showQualityPanel, setShowQualityPanel] = useState(false);
-  
   const fetchClientIP = async () => {
     try {
       const res  = await fetch("https://api.ipify.org?format=json");
@@ -352,7 +374,7 @@ function LiveStream() {
     return false;
   }, []);
 
-  // ── Fetch live showId dari IDN Plus API ──────────────────────────────────
+  // ── Fetch live showId dari IDN Plus API ───────────────────────────────────
   const fetchIdnPlusLiveShowId = useCallback(async () => {
     setFetchingIdnShow(true);
     try {
@@ -369,7 +391,6 @@ function LiveStream() {
         return null;
       }
 
-      // Cari show dengan status "live"
       const liveShow = data.data.find((show) => show.status === "live");
 
       if (!liveShow) {
@@ -380,11 +401,9 @@ function LiveStream() {
 
       console.log("IDN Plus live show ditemukan:", liveShow);
 
-      // Simpan info show untuk ditampilkan di UI
       setIdnLiveShow(liveShow);
       setFetchingIdnShow(false);
 
-      // Kembalikan showId
       return liveShow.showId || null;
     } catch (e) {
       console.error("fetchIdnPlusLiveShowId error:", e);
@@ -393,92 +412,90 @@ function LiveStream() {
     }
   }, []);
 
- const verifyAccess = async () => {
-  if (!verificationData.email) {
-    setVerificationError("Email wajib diisi");
-    return;
-  }
-  setVerifying(true);
-  setVerificationError("");
-  try {
-    // Cek apakah email punya akses valid
-    const verifyRes = await harukazeFetch("/verify", {
-      method: "POST",
-      body: JSON.stringify({ email: verificationData.email }),
-    });
-
-    if (!verifyRes.status || !verifyRes.has_access) {
-      setVerificationError(verifyRes.message || "Email tidak memiliki akses valid");
-      setVerifying(false);
+  // ── Verifikasi via Harukaze ───────────────────────────────────────────────
+  const verifyAccess = async () => {
+    if (!verificationData.email) {
+      setVerificationError("Email wajib diisi");
       return;
     }
+    setVerifying(true);
+    setVerificationError("");
+    try {
+      const verifyRes = await harukazeFetch("/verify", {
+        method: "POST",
+        body: JSON.stringify({ email: verificationData.email }),
+      });
 
-    // Gunakan 1 slot akses
-    const useRes = await harukazeFetch("/use", {
-      method: "POST",
-      body: JSON.stringify({ email: verificationData.email }),
-    });
+      if (!verifyRes.status || !verifyRes.has_access) {
+        setVerificationError(verifyRes.message || "Email tidak memiliki akses valid");
+        setVerifying(false);
+        return;
+      }
 
-    if (!useRes.status) {
-      setVerificationError(useRes.message || "Gagal menggunakan akses");
+      const useRes = await harukazeFetch("/use", {
+        method: "POST",
+        body: JSON.stringify({ email: verificationData.email }),
+      });
+
+      if (!useRes.status) {
+        setVerificationError(useRes.message || "Gagal menggunakan akses");
+        setVerifying(false);
+        return;
+      }
+
+      localStorage.setItem(
+        "stream_verification",
+        JSON.stringify({
+          email:     verificationData.email,
+          accessId:  useRes.data?.id,
+          timestamp: Date.now(),
+          verified:  true,
+        })
+      );
+      setIsVerified(true);
+      setShowVerification(false);
       setVerifying(false);
-      return;
+    } catch {
+      setVerificationError("Terjadi kesalahan saat verifikasi. Silakan coba lagi.");
+      setVerifying(false);
     }
+  };
 
-    localStorage.setItem(
-      "stream_verification",
-      JSON.stringify({
-        email: verificationData.email,
-        accessId: useRes.data?.id,
-        timestamp: Date.now(),
-        verified: true,
-      })
-    );
-    setIsVerified(true);
-    setShowVerification(false);
-    setVerifying(false);
-  } catch {
-    setVerificationError("Terjadi kesalahan saat verifikasi. Silakan coba lagi.");
-    setVerifying(false);
-  }
-};
-
-   const checkExistingVerification = async () => {
-  const stored = localStorage.getItem("stream_verification");
-  if (!stored) { setShowVerification(true); return false; }
-  try {
-    const info = JSON.parse(stored);
-    if (!info.verified || !info.timestamp || !info.email) {
+  const checkExistingVerification = async () => {
+    const stored = localStorage.getItem("stream_verification");
+    if (!stored) { setShowVerification(true); return false; }
+    try {
+      const info = JSON.parse(stored);
+      if (!info.verified || !info.timestamp || !info.email) {
+        localStorage.removeItem("stream_verification");
+        setShowVerification(true);
+        return false;
+      }
+      const hoursDiff = (Date.now() - info.timestamp) / (1000 * 60 * 60);
+      if (hoursDiff > 5) {
+        localStorage.removeItem("stream_verification");
+        setShowVerification(true);
+        return false;
+      }
+      const verifyRes = await harukazeFetch("/verify", {
+        method: "POST",
+        body: JSON.stringify({ email: info.email }),
+      });
+      if (!verifyRes.status || !verifyRes.has_access) {
+        localStorage.removeItem("stream_verification");
+        setShowVerification(true);
+        return false;
+      }
+      setIsVerified(true);
+      setShowVerification(false);
+      setVerificationData({ email: info.email, code: "" });
+      return true;
+    } catch {
       localStorage.removeItem("stream_verification");
       setShowVerification(true);
       return false;
     }
-    const hoursDiff = (Date.now() - info.timestamp) / (1000 * 60 * 60);
-    if (hoursDiff > 5) {
-      localStorage.removeItem("stream_verification");
-      setShowVerification(true);
-      return false;
-    }
-    // Re-verify email masih punya akses
-    const verifyRes = await harukazeFetch("/verify", {
-      method: "POST",
-      body: JSON.stringify({ email: info.email }),
-    });
-    if (!verifyRes.status || !verifyRes.has_access) {
-      localStorage.removeItem("stream_verification");
-      setShowVerification(true);
-      return false;
-    }
-    setIsVerified(true);
-    setShowVerification(false);
-    setVerificationData({ email: info.email, code: "" });
-    return true;
-  } catch {
-    localStorage.removeItem("stream_verification");
-    setShowVerification(true);
-    return false;
-  }
-};
+  };
 
   const fetchNearestShow = async () => {
     try {
@@ -507,21 +524,37 @@ function LiveStream() {
     setLoadingMembers(false);
   };
 
-  // ── Fetch stream via /live/stream?showId= ────────────────────────────────
- const fetchShowStream = useCallback(async (showId) => {
-  try {
-    const token = await generateStreamToken(showId, false);
-    setStreamToken(token);
-    const { url, qualities } = await getStreamURL(token, showId, false);
-    if (qualities.length > 0) setAvailableStreams(qualities);
-    if (!url) { console.warn("fetchShowStream: tidak ada URL ditemukan"); return null; }
-    return { url, title: showId, showId, token };
-  } catch (e) {
-    console.error("fetchShowStream error:", e);
-    return null;
-  }
-}, []);
-  
+  // ── Fetch stream via GiStream token ───────────────────────────────────────
+  const fetchShowStream = useCallback(async (showId) => {
+    try {
+      console.log("fetchShowStream: generating GiStream token for showId:", showId);
+
+      const token = await generateStreamToken(showId, false);
+      setStreamToken(token);
+
+      console.log("fetchShowStream: token generated, fetching stream URL...");
+
+      const { url, qualities } = await getStreamURL(token, showId, false);
+
+      if (qualities.length > 0) {
+        setAvailableStreams(qualities);
+        console.log("fetchShowStream: qualities available:", qualities.length);
+      }
+
+      if (!url) {
+        console.warn("fetchShowStream: tidak ada URL stream ditemukan");
+        return null;
+      }
+
+      console.log("fetchShowStream: stream URL obtained successfully");
+
+      return { url, title: showId, showId, token };
+    } catch (e) {
+      console.error("fetchShowStream error:", e);
+      return null;
+    }
+  }, []);
+
   // ── Load stream data ──────────────────────────────────────────────────────
   const loadStreamData = useCallback(async () => {
     try {
@@ -555,7 +588,6 @@ function LiveStream() {
           console.log("Menggunakan showId dari IDN Plus API:", idnShowId);
           resolvedShowId = idnShowId;
         } else {
-          // Fallback: gunakan showId hardcode jika tidak ada yang live
           console.warn("Tidak ada IDN Plus show yang live, fallback ke showId hardcode");
           resolvedShowId = "SH3401";
         }
@@ -604,7 +636,11 @@ function LiveStream() {
         }
 
       } else {
-        // Mux mode — langsung set streamData
+        // Non-slug mode — gunakan playbackId langsung sebagai showId ke GiStream
+        const result = await fetchShowStream(playbackId);
+        if (result && result.url) {
+          setHlsUrl(result.url);
+        }
         setStreamData({
           playbackId,
           title:    "Live Stream JKT48",
@@ -618,13 +654,12 @@ function LiveStream() {
       setError("Terjadi kesalahan saat memuat stream. Silakan coba lagi.");
       setLoading(false);
     }
-  }, [playbackId, fetchIdnPlusLiveShowId, idnLiveShow]);
+  }, [playbackId, fetchIdnPlusLiveShowId, fetchShowStream, idnLiveShow]);
 
   const handleResolutionChange = (quality) => {
-  if (!quality?.manual_url) return;
-  setHlsUrl(quality.manual_url);
-  // token tetap sama, tidak perlu regenerate untuk manual quality
-};
+    if (!quality?.manual_url) return;
+    setHlsUrl(quality.manual_url);
+  };
 
   useEffect(() => {
     const init = async () => {
@@ -724,16 +759,17 @@ function LiveStream() {
   };
   const handleVerificationSubmit = (e) => { e.preventDefault(); verifyAccess(); };
   const goBack                   = () => navigate(-1);
-  const handleLogout = () => {
-  localStorage.removeItem("stream_verification");
-  setIsVerified(false);
-  setShowVerification(true);
-  setStreamData(null);
-  setHlsUrl("");
-  setAvailableStreams([]);
-  setVerificationData({ email: "", code: "" }); // code tetap ada di state tapi tidak dipakai
-  setIdnLiveShow(null);
-};
+  const handleLogout             = () => {
+    localStorage.removeItem("stream_verification");
+    setIsVerified(false);
+    setShowVerification(true);
+    setStreamData(null);
+    setHlsUrl("");
+    setAvailableStreams([]);
+    setStreamToken("");
+    setVerificationData({ email: "", code: "" });
+    setIdnLiveShow(null);
+  };
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!chatInput.trim() || !chatUser) return;
@@ -765,61 +801,57 @@ function LiveStream() {
     );
   }
 
-    if (showVerification && !isVerified) {
-  return (
-    <div className="verification-page">
-      <div className="verification-container">
-        <div className="verification-card">
-          <h1>Verifikasi Akses</h1>
-          <p>Masukkan email yang sudah didaftarkan untuk mengakses live stream</p>
-          <form onSubmit={handleVerificationSubmit}>
-            <div className="form-group">
-              <label>Email</label>
-              <input
-                type="email"
-                name="email"
-                value={verificationData.email}
-                onChange={handleInputChange}
-                placeholder="email@example.com"
-                required
-              />
+  if (showVerification && !isVerified) {
+    return (
+      <div className="verification-page">
+        <div className="verification-container">
+          <div className="verification-card">
+            <h1>Verifikasi Akses</h1>
+            <p>Masukkan email yang sudah didaftarkan untuk mengakses live stream</p>
+            <form onSubmit={handleVerificationSubmit}>
+              <div className="form-group">
+                <label>Email</label>
+                <input
+                  type="email"
+                  name="email"
+                  value={verificationData.email}
+                  onChange={handleInputChange}
+                  placeholder="email@example.com"
+                  required
+                />
+              </div>
+              {verificationError && (
+                <div className="error-message">{verificationError}</div>
+              )}
+              {verifying
+                ? <button type="button" className="verify-button" disabled><span className="spinner"></span> Memverifikasi...</button>
+                : <button type="submit" className="verify-button">✓ Verifikasi Akses</button>
+              }
+            </form>
+            <div className="verification-info">
+              <p>!<strong>Informasi:</strong></p>
+              <ul>
+                <li>Email harus terdaftar dan memiliki akses aktif</li>
+                <li>Setiap verifikasi akan menggunakan 1 slot akses</li>
+                <li>Akses berlaku selama 5 jam</li>
+                <li>Session tetap aktif saat refresh halaman</li>
+                <li>
+                  Punya membership monthly?{" "}
+                  <span
+                    style={{ color: "#DC1F2E", cursor: "pointer", fontWeight: 700 }}
+                    onClick={() => navigate("/login")}
+                  >
+                    Login di sini
+                  </span>
+                </li>
+              </ul>
             </div>
-            {verificationError && (
-              <div className="error-message">{verificationError}</div>
-            )}
-            {verifying
-              ? <button type="button" className="verify-button" disabled>
-                  <span className="spinner"></span> Memverifikasi...
-                </button>
-              : <button type="submit" className="verify-button">
-                  ✓ Verifikasi Akses
-                </button>
-            }
-          </form>
-          <div className="verification-info">
-            <p>!<strong>Informasi:</strong></p>
-            <ul>
-              <li>Email harus terdaftar dan memiliki akses aktif</li>
-              <li>Setiap verifikasi akan menggunakan 1 slot akses</li>
-              <li>Akses berlaku selama 5 jam</li>
-              <li>Session tetap aktif saat refresh halaman</li>
-              <li>
-                Punya membership monthly?{" "}
-                <span
-                  style={{ color: "#DC1F2E", cursor: "pointer", fontWeight: 700 }}
-                  onClick={() => navigate("/login")}
-                >
-                  Login di sini
-                </span>
-              </li>
-            </ul>
+            <button onClick={goBack} className="back-button">← Kembali</button>
           </div>
-          <button onClick={goBack} className="back-button">← Kembali</button>
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
   if (loading || fetchingIdnShow) {
     return (
@@ -923,29 +955,32 @@ function LiveStream() {
 
       <div className="stream-layout">
         <div className="main-content">
-          {/* sebelumnya ada isSlugMode check & MuxPlayer — ganti jadi ini: */}
-<div className="player-container">
-  {hlsUrl ? (
-    <HlsPlayer
-      src={hlsUrl}
-      title={idnLiveShow?.title || streamData?.title || "Live Stream JKT48"}
-      streams={availableStreams}
-      onResolutionChange={handleResolutionChange}
-      token={streamToken}
-    />
-  ) : (
-    <div style={{
-      width: "100%", aspectRatio: "16/9",
-      background: "#0e0e1a", borderRadius: "8px",
-      display: "flex", alignItems: "center", justifyContent: "center",
-    }}>
-      <div style={{ textAlign: "center", color: "#7878a8" }}>
-        <div className="spinner-large" style={{ margin: "0 auto 12px" }} />
-        <p style={{ fontSize: "13px" }}>Menghubungkan ke stream...</p>
-      </div>
-    </div>
-  )}
-</div>
+          <div className="player-container">
+            {hlsUrl ? (
+              <HlsPlayer
+                src={hlsUrl}
+                title={idnLiveShow?.title || streamData.title}
+                streams={availableStreams}
+                onResolutionChange={handleResolutionChange}
+                token={streamToken}
+              />
+            ) : (
+              <div style={{
+                width: "100%",
+                aspectRatio: "16/9",
+                background: "#0e0e1a",
+                borderRadius: "8px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}>
+                <div style={{ textAlign: "center", color: "#7878a8" }}>
+                  <div className="spinner-large" style={{ margin: "0 auto 12px" }} />
+                  <p style={{ fontSize: "13px" }}>Menghubungkan ke stream...</p>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Info tambahan dari IDN Plus */}
           {idnLiveShow && (
