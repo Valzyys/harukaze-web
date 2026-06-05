@@ -520,18 +520,21 @@ function AppBannerSection() {
 // ══════════════════════════════════════════════════════════════════════════════
 const NEWS_API = `https://v5.jkt48connect.com/api/jkt48/NEWS?apikey=JKTCONNECT`;
 
+// ── Tambah kategori baru ──────────────────────────────────────────────────
 const categoryColor = {
-  Theater:  { bg: "rgba(220,31,46,0.15)",  color: "#DC1F2E" },
-  Birthday: { bg: "rgba(255,105,180,0.15)", color: "#FF69B4" },
-  Event:    { bg: "rgba(255,215,0,0.15)",  color: "#FFD700" },
-  Other:    { bg: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.5)" },
+  Theater:           { bg: "rgba(220,31,46,0.15)",   color: "#DC1F2E" },
+  Birthday:          { bg: "rgba(255,105,180,0.15)",  color: "#FF69B4" },
+  Event:             { bg: "rgba(255,215,0,0.15)",    color: "#FFD700" },
+  Goods:             { bg: "rgba(52,211,153,0.15)",   color: "#34D399" },
+  Trainee:           { bg: "rgba(96,165,250,0.15)",   color: "#60a5fa" },
+  "Graduation 2-Shot": { bg: "rgba(167,139,250,0.15)", color: "#a78bfa" },
+  Other:             { bg: "rgba(255,255,255,0.08)",  color: "rgba(255,255,255,0.5)" },
 };
 
+// ── proxyImg: tidak perlu proxy, images.jkt48connect.com sudah aman ───────
 function proxyImg(url) {
   if (!url) return DEFAULT_IMG;
-  if (!url.includes("jkt48.com")) return url;
-  // Ganti dengan URL worker kamu
-  return `https://autumn-limit-898f.aslannarnia806.workers.dev/?url=${encodeURIComponent(url)}`;
+  return url; // langsung pakai, tidak perlu worker proxy
 }
 
 function NewsSection() {
