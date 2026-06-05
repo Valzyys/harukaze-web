@@ -1,540 +1,644 @@
-import { useEffect, useState, useRef, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState, useCallback, useRef } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const ADMIN_USER       = "JKT48Connect";
-const ADMIN_PASS       = "21082007";
-const API_BASE         = "https://v2.jkt48connect.com/api/jkt48";
-const API_KEY          = "JKTCONNECT";
-const PLAYLIST_POLL_MS = 3_000;
+const ADMIN_USER = "harukaze48";
+const ADMIN_PASS = "21082007";
+const API_BASE   = "https://v5.jkt48connect.com/api/harukaze";
+const API_KEY    = "JKTCONNECT";
 
-// ─── Server 2 Constants ───────────────────────────────────────────────────────
-const STREAM2_API     = `${API_BASE}/live/stream`;
-const STREAM2_SHOW_ID = "SH1D7B";
-
-// ─── Proxy Constants ──────────────────────────────────────────────────────────
-const STREAM_PROXY_BASE = "https://stream.jkt48connect.com/hls/";
-
-// ─── Proxy Helper ─────────────────────────────────────────────────────────────
-function proxyStreamUrl(url) {
-  if (!url) return url;
-  if (url.startsWith(STREAM_PROXY_BASE)) return url;
-  return STREAM_PROXY_BASE + encodeURIComponent(url);
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function charmapToString(obj) {
-  return Object.keys(obj)
-    .filter((k) => !isNaN(k))
-    .sort((a, b) => Number(a) - Number(b))
-    .map((k) => obj[k])
-    .join("");
-}
-
-function isCharmap(obj) {
-  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
-  const keys = Object.keys(obj);
-  return keys.length > 0 && keys.every((k) => !isNaN(k));
-}
-
-function parseM3U8(m3u8) {
-  const lines   = m3u8.split("\n").map((l) => l.trim()).filter(Boolean);
-  const session = {};
-  const streams = [];
-  let current   = null;
-
-  for (const line of lines) {
-    if (line.startsWith("#EXT-X-SESSION-DATA:")) {
-      const id  = (line.match(/DATA-ID="([^"]+)"/)  || [])[1];
-      const val = (line.match(/VALUE="([^"]+)"/)    || [])[1];
-      if (id && val !== undefined) session[id] = val;
-      continue;
-    }
-    if (line.startsWith("#EXT-X-MEDIA:")) {
-      current = {};
-      const get = (re) => (line.match(re) || [])[1];
-      current.TYPE        = get(/TYPE=([^,\n]+)/);
-      current["GROUP-ID"] = get(/GROUP-ID="([^"]+)"/);
-      current.NAME        = get(/NAME="([^"]+)"/);
-      current.AUTOSELECT  = get(/AUTOSELECT=([^,\n]+)/);
-      current.DEFAULT     = get(/DEFAULT=([^,\n]+)/);
-      continue;
-    }
-    if (line.startsWith("#EXT-X-STREAM-INF:")) {
-      if (!current) current = {};
-      const get = (re) => (line.match(re) || [])[1];
-      current.BANDWIDTH     = get(/BANDWIDTH=(\d+)/);
-      current.RESOLUTION    = get(/RESOLUTION=([^\s,]+)/);
-      current.CODECS        = get(/CODECS="([^"]+)"/);
-      current.VIDEO         = get(/VIDEO="([^"]+)"/);
-      current["FRAME-RATE"] = get(/FRAME-RATE=([\d.]+)/);
-      continue;
-    }
-    if (!line.startsWith("#") && current && current.BANDWIDTH) {
-      current.url = line;
-      streams.push(current);
-      current = null;
-    }
-  }
-
-  return { session, streams };
-}
-
-function resolveStreamResponse(data) {
-  if (data && Array.isArray(data.streams) && data.streams.length)
-    return { session: data.session || {}, streams: data.streams, raw: data };
-
-  if (isCharmap(data)) {
-    const str = charmapToString(data).trim();
-    if (str.startsWith("#EXTM3U")) {
-      const parsed = parseM3U8(str);
-      return { ...parsed, raw: { success: true, ...parsed } };
-    }
-    try { return resolveStreamResponse(JSON.parse(str)); }
-    catch { return { session: {}, streams: [], raw: { raw_string: str } }; }
-  }
-
-  const flatUrl =
-    data?.stream_url || data?.data?.stream_url ||
-    data?.playback_url || data?.data?.playback_url ||
-    data?.url || null;
-
-  if (flatUrl)
-    return { session: {}, streams: [{ NAME: "default", BANDWIDTH: "0", url: flatUrl }], raw: data };
-
-  return { session: {}, streams: [], raw: data };
-}
-
-// ─── Server 2: Direct fetch dari JKT48Connect stream API ─────────────────────
-async function fetchStream2Direct(showId = STREAM2_SHOW_ID) {
-  const url = `${STREAM2_API}?apikey=${API_KEY}&showId=${encodeURIComponent(showId)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Stream2 HTTP ${res.status}`);
+const apiFetch = async (path, opts = {}) => {
+  const url = `${API_BASE}${path}${path.includes("?") ? "&" : "?"}apikey=${API_KEY}`;
+  const res  = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
   const data = await res.json();
+  return data;
+};
 
-  if (!data.success) throw new Error(data.message || "Stream2 API error");
-
-  let streams = [];
-
-  if (Array.isArray(data.streams) && data.streams.length) {
-    streams = [...data.streams].sort(
-      (a, b) => Number(b.BANDWIDTH || 0) - Number(a.BANDWIDTH || 0)
-    );
-  } else if (data.stream_url) {
-    streams = [{ NAME: "default", BANDWIDTH: "0", url: data.stream_url }];
-  }
-
-  if (!streams.length) throw new Error("Server 2: tidak ada stream URL ditemukan");
-
-  return {
-    streams,
-    session: data.session || {},
-    showId: data.showId || showId,
-    tokenId: data.tokenId || null,
-  };
-}
-
-// ─── Date / Time Helpers ──────────────────────────────────────────────────────
-function tsToDate(ts) {
-  if (!ts) return null;
-  const n = Number(ts);
-  return new Date(n < 1e12 ? n * 1000 : n);
-}
-
-function todayWIB() {
-  const now = new Date(Date.now() + 7 * 3600 * 1000);
-  return now.toISOString().slice(0, 10);
-}
-
-function slugMatchesToday(slug) {
-  if (!slug) return false;
-  const today = todayWIB();
-  const match = slug.match(/(\d{4}-\d{2}-\d{2})/g);
-  if (!match) return false;
-  return match.some((d) => d === today);
-}
-
-function itemMatchesToday(item) {
-  if (slugMatchesToday(item.slug)) return true;
-  const candidates = [item.scheduled_at, item.live_at, item.end_at].filter(Boolean);
-  const today = todayWIB();
-  return candidates.some((ts) => {
-    const d = tsToDate(ts);
-    if (!d) return false;
-    const wib = new Date(d.getTime() + 7 * 3600 * 1000);
-    return wib.toISOString().slice(0, 10) === today;
+// ─── Utility ──────────────────────────────────────────────────────────────────
+const fmtDate = (d) => {
+  if (!d) return "—";
+  return new Date(d).toLocaleString("id-ID", {
+    day: "2-digit", month: "short", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
   });
+};
+
+const fmtDateShort = (d) => {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString("id-ID", {
+    day: "2-digit", month: "short", year: "numeric",
+  });
+};
+
+const isExpired = (expiresAt) => expiresAt && new Date(expiresAt) < new Date();
+
+const remainingUses = (row) => {
+  if (row.usage_limit === -1) return "∞";
+  return Math.max(0, row.usage_limit - row.usage_count);
+};
+
+// ─── Toast ────────────────────────────────────────────────────────────────────
+function useToast() {
+  const [toasts, setToasts] = useState([]);
+  const add = useCallback((msg, type = "success") => {
+    const id = Date.now();
+    setToasts((p) => [...p, { id, msg, type }]);
+    setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3500);
+  }, []);
+  return { toasts, add };
 }
 
-// ─── HLS Player ───────────────────────────────────────────────────────────────
-function HLSPlayer({ src, title, pollUrl }) {
-  const videoRef = useRef(null);
-  const hlsRef   = useRef(null);
-  const pollRef  = useRef(null);
-  const srcRef   = useRef(src);
-  const [status, setStatus] = useState("loading");
-
-  const initHls = useCallback(async (url, video, resumeTime = 0) => {
-    if (!url || !video) return;
-    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
-
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
-      if (resumeTime > 0) video.currentTime = resumeTime;
-      video.play().then(() => setStatus("playing")).catch(() => setStatus("error"));
-      return;
-    }
-
-    try {
-      const Hls = (await import("hls.js")).default;
-      if (!Hls.isSupported()) { setStatus("error"); return; }
-
-      const hls = new Hls({
-        enableWorker:          true,
-        lowLatencyMode:        true,
-        liveSyncDurationCount: 3,
-        liveDurationInfinity:  true,
-      });
-      hlsRef.current = hls;
-
-      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) setStatus("error"); });
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (resumeTime > 0) video.currentTime = resumeTime;
-        video.play().then(() => setStatus("playing")).catch(() => {});
-      });
-
-      hls.loadSource(url);
-      hls.attachMedia(video);
-    } catch { setStatus("error"); }
-  }, []);
-
-  useEffect(() => {
-    if (!src || !videoRef.current) return;
-    srcRef.current = src;
-    setStatus("loading");
-    initHls(src, videoRef.current, 0);
-    return () => {
-      clearInterval(pollRef.current);
-      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
-    };
-  }, [src, initHls]);
-
-  useEffect(() => {
-    if (!pollUrl || !src) return;
-    clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      const video = videoRef.current;
-      const hls   = hlsRef.current;
-      if (!video || !hls) return;
-      try {
-        const newUrl = await pollUrl();
-        if (!newUrl) return;
-        if (newUrl === srcRef.current) {
-          hls.loadSource(newUrl);
-        } else {
-          const resumeTime = video.currentTime || 0;
-          srcRef.current = newUrl;
-          await initHls(newUrl, video, resumeTime);
-        }
-      } catch (_) {}
-    }, PLAYLIST_POLL_MS);
-    return () => clearInterval(pollRef.current);
-  }, [src, pollUrl, initHls]);
-
+function ToastContainer({ toasts }) {
   return (
-    <div style={{ position: "relative", width: "100%", background: "#000", borderRadius: "12px", overflow: "hidden" }}>
-      {status === "loading" && (
-        <div style={{
-          position: "absolute", inset: 0, display: "flex",
-          flexDirection: "column", alignItems: "center", justifyContent: "center",
-          background: "#0a0a0a", zIndex: 2, gap: 12,
+    <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 9999, display: "flex", flexDirection: "column", gap: 8 }}>
+      {toasts.map((t) => (
+        <div key={t.id} style={{
+          background: t.type === "error" ? "#DC1F2E" : t.type === "warn" ? "#f59e0b" : "#22c55e",
+          color: "#fff", padding: "10px 18px", borderRadius: 8,
+          fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px #0008",
+          animation: "fadeInUp .25s ease", maxWidth: 320,
         }}>
-          <div style={{
-            width: 44, height: 44, border: "3px solid #DC1F2E33",
-            borderTop: "3px solid #DC1F2E", borderRadius: "50%",
-            animation: "spin 0.8s linear infinite",
-          }} />
-          <span style={{ color: "#888", fontSize: 13 }}>Memuat stream…</span>
+          {t.msg}
         </div>
-      )}
-      {status === "error" && (
-        <div style={{
-          position: "absolute", inset: 0, display: "flex",
-          flexDirection: "column", alignItems: "center", justifyContent: "center",
-          background: "#0a0a0a", zIndex: 2, gap: 8,
-        }}>
-          <span style={{ fontSize: 36 }}>⚠️</span>
-          <span style={{ color: "#DC1F2E", fontWeight: 700 }}>Gagal memuat stream</span>
-          <span style={{ color: "#555", fontSize: 12 }}>Coba refresh atau pilih kualitas lain</span>
-        </div>
-      )}
-      <video
-        ref={videoRef}
-        controls
-        style={{ width: "100%", display: "block", maxHeight: "56.25vw", background: "#000" }}
-        playsInline
-        title={title}
-      />
+      ))}
     </div>
   );
 }
 
-// ─── Server Badge ─────────────────────────────────────────────────────────────
-function ServerBadge({ server, onChange }) {
+// ─── Modal ────────────────────────────────────────────────────────────────────
+function Modal({ title, onClose, children }) {
   return (
-    <div className="al-server-toggle">
-      <span className="al-server-label">Server:</span>
-      <div className="al-server-pills">
-        <button
-          className={`al-server-pill ${server === 1 ? "active" : ""}`}
-          onClick={() => onChange(1)}
-        >
-          <span className="al-server-dot s1" />
-          Server 1
-          <em>JKTConnect</em>
-        </button>
-        <button
-          className={`al-server-pill ${server === 2 ? "active" : ""}`}
-          onClick={() => onChange(2)}
-        >
-          <span className="al-server-dot s2" />
-          Server 2
-          <em>IDN Stream</em>
-        </button>
+    <div style={{
+      position: "fixed", inset: 0, background: "#000000bb",
+      zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center",
+      padding: "16px", backdropFilter: "blur(4px)",
+    }} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={{
+        background: "var(--bg2)", border: "1px solid var(--line)",
+        borderRadius: 16, width: "min(520px, 100%)", maxHeight: "90vh",
+        overflow: "auto", animation: "fadeInUp .2s ease",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "20px 24px 16px", borderBottom: "1px solid var(--line)",
+          position: "sticky", top: 0, background: "var(--bg2)", zIndex: 1,
+        }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: "var(--txt)", margin: 0 }}>{title}</h3>
+          <button onClick={onClose} style={{
+            background: "none", border: "none", color: "var(--txt3)",
+            fontSize: 20, cursor: "pointer", lineHeight: 1, padding: "0 4px",
+          }}>×</button>
+        </div>
+        <div style={{ padding: "20px 24px 24px" }}>{children}</div>
       </div>
     </div>
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
-export default function AdminLive() {
-  const navigate = useNavigate();
+// ─── Field Component ──────────────────────────────────────────────────────────
+function Field({ label, children, hint }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <label style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", letterSpacing: "1.2px", textTransform: "uppercase" }}>
+        {label}
+      </label>
+      {children}
+      {hint && <span style={{ fontSize: 11, color: "var(--txt3)" }}>{hint}</span>}
+    </div>
+  );
+}
 
-  const [authed,        setAuthed]        = useState(false);
-  const [loginForm,     setLoginForm]     = useState({ username: "", password: "" });
-  const [loginError,    setLoginError]    = useState("");
-  const [loginLoading,  setLoginLoading]  = useState(false);
+const inputStyle = {
+  background: "var(--bg3)", border: "1px solid var(--line)", borderRadius: 8,
+  padding: "9px 12px", color: "var(--txt)", fontSize: 13, fontFamily: "inherit",
+  outline: "none", width: "100%", transition: "border-color .2s",
+};
 
-  const [shows,         setShows]         = useState([]);
-  const [showsLoading,  setShowsLoading]  = useState(false);
-  const [showsError,    setShowsError]    = useState("");
+// ─── Status Badge ─────────────────────────────────────────────────────────────
+function StatusBadge({ row }) {
+  if (!row.is_active || row.deleted_at) return <span style={{ ...badgeStyle, background: "#55555522", color: "#888", border: "1px solid #55555544" }}>Nonaktif</span>;
+  if (isExpired(row.expires_at)) return <span style={{ ...badgeStyle, background: "#DC1F2E22", color: "#DC1F2E", border: "1px solid #DC1F2E44" }}>Expired</span>;
+  if (row.usage_limit !== -1 && row.usage_count >= row.usage_limit) return <span style={{ ...badgeStyle, background: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b44" }}>Habis</span>;
+  return <span style={{ ...badgeStyle, background: "#22c55e22", color: "#22c55e", border: "1px solid #22c55e44" }}>Aktif</span>;
+}
 
-  const [selectedSlug,  setSelectedSlug]  = useState(null);
-  const [selectedShow,  setSelectedShow]  = useState(null);
+const badgeStyle = { fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20, letterSpacing: "0.5px" };
 
-  const [activeServer,  setActiveServer]  = useState(1);
-  const [streamData,    setStreamData]    = useState(null);
-  const [streamLoading, setStreamLoading] = useState(false);
-  const [streamError,   setStreamError]   = useState("");
-  const [activeStream,  setActiveStream]  = useState(null);
+// ─── Grant Modal ──────────────────────────────────────────────────────────────
+function GrantModal({ onClose, onSuccess, toast }) {
+  const [form, setForm] = useState({
+    email: "", label: "", access_type: "standard", purpose: "",
+    usage_limit: 1, expires_in_hours: 24, notes: "", created_by: "admin",
+  });
+  const [loading, setLoading] = useState(false);
 
-  // Server 2 extra info
-  const [stream2Info,   setStream2Info]   = useState(null);
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
-  const activeStreamRef  = useRef(null);
-  const selectedSlugRef  = useRef(null);
-  const activeServerRef  = useRef(1);
-
-  // ── Restore session ──────────────────────────────────────────────────────
-  useEffect(() => {
-    const saved = sessionStorage.getItem("adminlive_auth");
-    if (saved === "1") setAuthed(true);
-  }, []);
-
-  // ── Fetch shows ──────────────────────────────────────────────────────────
-  const fetchShows = useCallback(async () => {
-    setShowsLoading(true);
-    setShowsError("");
+  const handleSubmit = async () => {
+    if (!form.email) { toast("Email wajib diisi", "error"); return; }
+    setLoading(true);
     try {
-      const res  = await fetch(`${API_BASE}/idnplus?apikey=${API_KEY}`);
-      const json = await res.json();
-      const list = json.data || [];
-      const todayItems = list.filter(itemMatchesToday);
-      setShows(todayItems.length ? todayItems : list);
-      if (todayItems.length) {
-        setSelectedSlug(todayItems[0].slug);
-        setSelectedShow(todayItems[0]);
-      }
+      const body = {
+        ...form,
+        usage_limit: Number(form.usage_limit),
+        expires_in_hours: form.expires_in_hours === "" ? null : Number(form.expires_in_hours),
+      };
+      const res = await apiFetch("/grant", { method: "POST", body: JSON.stringify(body) });
+      if (res.status) { toast("Akses berhasil diberikan!"); onSuccess(); onClose(); }
+      else toast(res.message || "Gagal", "error");
     } catch (e) {
-      setShowsError("Gagal mengambil daftar show: " + e.message);
+      toast(e.message, "error");
     } finally {
-      setShowsLoading(false);
+      setLoading(false);
     }
-  }, []);
+  };
 
-  useEffect(() => { if (authed) fetchShows(); }, [authed, fetchShows]);
+  return (
+    <Modal title="Grant Akses Baru" onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <Field label="Email *">
+          <input style={inputStyle} type="email" placeholder="user@email.com"
+            value={form.email} onChange={(e) => set("email", e.target.value)} />
+        </Field>
+        <Field label="Label" hint="Nama/keterangan untuk admin">
+          <input style={inputStyle} placeholder="misal: Tiket Theater Jun 2026"
+            value={form.label} onChange={(e) => set("label", e.target.value)} />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Access Type">
+            <select style={inputStyle} value={form.access_type} onChange={(e) => set("access_type", e.target.value)}>
+              <option value="standard">Standard</option>
+              <option value="premium">Premium</option>
+              <option value="vip">VIP</option>
+            </select>
+          </Field>
+          <Field label="Purpose">
+            <input style={inputStyle} placeholder="theater_stream, concert, ..."
+              value={form.purpose} onChange={(e) => set("purpose", e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Jumlah Pakai" hint="-1 = unlimited">
+            <input style={inputStyle} type="number" min="-1"
+              value={form.usage_limit} onChange={(e) => set("usage_limit", e.target.value)} />
+          </Field>
+          <Field label="Masa Aktif (jam)" hint="Kosong = tidak expire">
+            <input style={inputStyle} type="number" min="1" placeholder="24"
+              value={form.expires_in_hours} onChange={(e) => set("expires_in_hours", e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Catatan Internal">
+          <textarea style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
+            placeholder="Catatan untuk admin..."
+            value={form.notes} onChange={(e) => set("notes", e.target.value)} />
+        </Field>
+        <button onClick={handleSubmit} disabled={loading} style={btnPrimaryStyle}>
+          {loading ? <Spin /> : "Grant Akses"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
 
-  // ── Server 1: Fetch stream dari JKTConnect API ────────────────────────────
-  const fetchStreamFromApi = useCallback(async (slug) => {
-    const res      = await fetch(`${API_BASE}/live/show?slug=${encodeURIComponent(slug)}&apikey=${API_KEY}`);
-    const raw      = await res.json();
-    const resolved = resolveStreamResponse(raw);
-    if (!resolved.streams.length) return null;
+// ─── Edit Modal ───────────────────────────────────────────────────────────────
+function EditModal({ access, onClose, onSuccess, toast }) {
+  const [form, setForm] = useState({
+    label: access.label || "",
+    access_type: access.access_type || "standard",
+    purpose: access.purpose || "",
+    usage_limit: access.usage_limit,
+    is_active: access.is_active,
+    notes: access.notes || "",
+    extend_hours: "",
+  });
+  const [loading, setLoading] = useState(false);
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
-    const proxiedStreams = resolved.streams.map((s) => {
-      const decodedUrl = s.stream_url_decoded || s.url;
-      return { ...s, url: proxyStreamUrl(decodedUrl) };
-    });
-
-    const sorted = [...proxiedStreams].sort(
-      (a, b) => Number(b.BANDWIDTH || 0) - Number(a.BANDWIDTH || 0)
-    );
-    return { streams: proxiedStreams, session: resolved.session, sorted };
-  }, []);
-
-  // ── Server 2: Direct fetch ────────────────────────────────────────────────
-  const fetchStream2 = useCallback(async () => {
-    const result = await fetchStream2Direct(STREAM2_SHOW_ID);
-    return {
-      streams: result.streams,
-      session: result.session,
-      sorted:  result.streams,
-      showId:  result.showId,
-      tokenId: result.tokenId,
-    };
-  }, []);
-
-  // ── pollUrl Server 1 ──────────────────────────────────────────────────────
-  const pollUrlServer1 = useCallback(async () => {
-    const slug = selectedSlugRef.current;
-    if (!slug) return null;
-    const result = await fetchStreamFromApi(slug);
-    if (!result) return null;
-    const currentName = activeStreamRef.current?.NAME;
-    const match  = result.streams.find((s) => s.NAME === currentName);
-    const target = match || result.sorted[0];
-    setStreamData({ streams: result.streams, session: result.session });
-    return target?.url ?? null;
-  }, [fetchStreamFromApi]);
-
-  // ── pollUrl Server 2 ──────────────────────────────────────────────────────
-  const pollUrlServer2 = useCallback(async () => {
-    if (activeServerRef.current !== 2) return null;
+  const handleSubmit = async () => {
+    setLoading(true);
     try {
-      const result = await fetchStream2Direct(STREAM2_SHOW_ID);
-      const currentName = activeStreamRef.current?.NAME;
-      const match  = result.streams.find((s) => s.NAME === currentName);
-      const target = match || result.streams[0];
-      setStreamData({ streams: result.streams, session: result.session });
-      return target?.url ?? null;
-    } catch {
-      return null;
+      const body = {
+        label: form.label || null,
+        access_type: form.access_type,
+        purpose: form.purpose || null,
+        usage_limit: Number(form.usage_limit),
+        is_active: form.is_active,
+        notes: form.notes || null,
+      };
+      if (form.extend_hours !== "") body.extend_hours = Number(form.extend_hours);
+
+      const res = await apiFetch(`/${access.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      if (res.status) { toast("Akses berhasil diperbarui!"); onSuccess(); onClose(); }
+      else toast(res.message || "Gagal", "error");
+    } catch (e) {
+      toast(e.message, "error");
+    } finally {
+      setLoading(false);
     }
+  };
+
+  return (
+    <Modal title={`Edit Akses — ${access.email}`} onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <Field label="Label">
+          <input style={inputStyle} value={form.label} onChange={(e) => set("label", e.target.value)} />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Access Type">
+            <select style={inputStyle} value={form.access_type} onChange={(e) => set("access_type", e.target.value)}>
+              <option value="standard">Standard</option>
+              <option value="premium">Premium</option>
+              <option value="vip">VIP</option>
+            </select>
+          </Field>
+          <Field label="Purpose">
+            <input style={inputStyle} value={form.purpose} onChange={(e) => set("purpose", e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Jumlah Pakai" hint="-1 = unlimited">
+            <input style={inputStyle} type="number" min="-1"
+              value={form.usage_limit} onChange={(e) => set("usage_limit", e.target.value)} />
+          </Field>
+          <Field label="Perpanjang (jam)" hint="Tambah dari sekarang/expiry">
+            <input style={inputStyle} type="number" min="1" placeholder="misal: 48"
+              value={form.extend_hours} onChange={(e) => set("extend_hours", e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Status">
+          <select style={inputStyle} value={form.is_active ? "true" : "false"}
+            onChange={(e) => set("is_active", e.target.value === "true")}>
+            <option value="true">Aktif</option>
+            <option value="false">Nonaktif</option>
+          </select>
+        </Field>
+        <Field label="Catatan Internal">
+          <textarea style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
+            value={form.notes} onChange={(e) => set("notes", e.target.value)} />
+        </Field>
+        <button onClick={handleSubmit} disabled={loading} style={btnPrimaryStyle}>
+          {loading ? <Spin /> : "Simpan Perubahan"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Detail Modal ─────────────────────────────────────────────────────────────
+function DetailModal({ email, onClose, toast }) {
+  const [data, setData]     = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    apiFetch(`/email/${encodeURIComponent(email)}`)
+      .then((r) => { if (r.status) setData(r.data); else toast(r.message, "error"); })
+      .catch((e) => toast(e.message, "error"))
+      .finally(() => setLoading(false));
+  }, [email]);
+
+  return (
+    <Modal title={`Detail — ${email}`} onClose={onClose}>
+      {loading ? (
+        <div style={{ textAlign: "center", padding: 40 }}><Spin xl /></div>
+      ) : data ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Summary */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+            {[
+              { label: "Total Akses", val: data.summary.total_access },
+              { label: "Aktif", val: data.summary.active_access },
+              { label: "Total Pakai", val: data.summary.total_uses },
+            ].map((s) => (
+              <div key={s.label} style={{ background: "var(--bg3)", border: "1px solid var(--line)", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "var(--txt)" }}>{s.val}</div>
+                <div style={{ fontSize: 10, color: "var(--txt3)", marginTop: 2, textTransform: "uppercase", letterSpacing: "0.8px" }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {data.is_blacklisted && (
+            <div style={{ background: "#DC1F2E18", border: "1px solid #DC1F2E44", borderRadius: 8, padding: "10px 14px", color: "#DC1F2E", fontSize: 13, fontWeight: 600 }}>
+              ⚠️ Email ini ada di blacklist
+            </div>
+          )}
+
+          {/* Access list */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--txt3)", letterSpacing: "1.2px", textTransform: "uppercase", marginBottom: 8 }}>Daftar Akses</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {data.access_list.length === 0 ? (
+                <div style={{ color: "var(--txt3)", fontSize: 13 }}>Tidak ada akses</div>
+              ) : data.access_list.map((a) => (
+                <div key={a.id} style={{ background: "var(--bg3)", border: "1px solid var(--line)", borderRadius: 8, padding: "10px 12px", fontSize: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <StatusBadge row={a} />
+                    <span style={{ color: "var(--txt)", fontWeight: 600 }}>{a.label || a.access_type}</span>
+                    {a.purpose && <span style={{ color: "var(--txt3)" }}>· {a.purpose}</span>}
+                  </div>
+                  <div style={{ color: "var(--txt3)", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <span>Pakai: {a.usage_count}/{a.usage_limit === -1 ? "∞" : a.usage_limit}</span>
+                    <span>Expire: {fmtDateShort(a.expires_at)}</span>
+                    <span>Dibuat: {fmtDateShort(a.created_at)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Recent logs */}
+          {data.recent_logs.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--txt3)", letterSpacing: "1.2px", textTransform: "uppercase", marginBottom: 8 }}>Log Terbaru</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 200, overflowY: "auto" }}>
+                {data.recent_logs.map((l) => (
+                  <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: "var(--bg3)", borderRadius: 6, fontSize: 11 }}>
+                    <span style={{ color: l.status === "success" ? "#22c55e" : "#DC1F2E", fontWeight: 700, minWidth: 50 }}>{l.action}</span>
+                    <span style={{ color: "var(--txt3)", flex: 1 }}>{l.error_message || "—"}</span>
+                    <span style={{ color: "var(--txt3)", whiteSpace: "nowrap" }}>{fmtDate(l.created_at)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ color: "var(--txt3)", textAlign: "center", padding: 40 }}>Data tidak ditemukan</div>
+      )}
+    </Modal>
+  );
+}
+
+// ─── Blacklist Modal ──────────────────────────────────────────────────────────
+function BlacklistModal({ onClose, onSuccess, toast }) {
+  const [form, setForm] = useState({ email: "", reason: "", expires_in_hours: "", created_by: "admin" });
+  const [loading, setLoading] = useState(false);
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const handleSubmit = async () => {
+    if (!form.email) { toast("Email wajib diisi", "error"); return; }
+    setLoading(true);
+    try {
+      const body = {
+        ...form,
+        expires_in_hours: form.expires_in_hours === "" ? null : Number(form.expires_in_hours),
+      };
+      const res = await apiFetch("/blacklist", { method: "POST", body: JSON.stringify(body) });
+      if (res.status) { toast("Email berhasil di-blacklist!"); onSuccess(); onClose(); }
+      else toast(res.message || "Gagal", "error");
+    } catch (e) {
+      toast(e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal title="Blacklist Email" onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ background: "#DC1F2E18", border: "1px solid #DC1F2E33", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#ff8080" }}>
+          Email yang di-blacklist akan dicabut semua aksesnya secara otomatis.
+        </div>
+        <Field label="Email *">
+          <input style={inputStyle} type="email" value={form.email} onChange={(e) => set("email", e.target.value)} />
+        </Field>
+        <Field label="Alasan">
+          <input style={inputStyle} value={form.reason} onChange={(e) => set("reason", e.target.value)} />
+        </Field>
+        <Field label="Durasi Blacklist (jam)" hint="Kosong = permanen">
+          <input style={inputStyle} type="number" min="1" placeholder="Kosong = permanen"
+            value={form.expires_in_hours} onChange={(e) => set("expires_in_hours", e.target.value)} />
+        </Field>
+        <button onClick={handleSubmit} disabled={loading}
+          style={{ ...btnPrimaryStyle, background: "#DC1F2E", boxShadow: "0 4px 16px #DC1F2E33" }}>
+          {loading ? <Spin /> : "Blacklist Email"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Shared button styles ─────────────────────────────────────────────────────
+const btnPrimaryStyle = {
+  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+  background: "var(--accent)", color: "#fff", border: "none", borderRadius: 8,
+  padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+  fontFamily: "inherit", boxShadow: "0 4px 16px var(--accent-glow)", transition: "opacity .2s",
+};
+
+function Spin({ xl }) {
+  return (
+    <div style={{
+      width: xl ? 32 : 16, height: xl ? 32 : 16,
+      border: `${xl ? 3 : 2}px solid #ffffff22`,
+      borderTop: `${xl ? 3 : 2}px solid #fff`,
+      borderRadius: "50%", animation: "spin .7s linear infinite",
+      display: "inline-block",
+    }} />
+  );
+}
+
+// ─── Access Table ─────────────────────────────────────────────────────────────
+function AccessTable({ items, onEdit, onRevoke, onDetail, loading }) {
+  if (loading) return (
+    <div style={{ textAlign: "center", padding: "48px 0", color: "var(--txt3)" }}>
+      <Spin xl /><p style={{ marginTop: 12, fontSize: 13 }}>Memuat data...</p>
+    </div>
+  );
+
+  if (!items.length) return (
+    <div style={{ textAlign: "center", padding: "48px 0", color: "var(--txt3)", fontSize: 14 }}>
+      Tidak ada data ditemukan
+    </div>
+  );
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr>
+            {["Email", "Label", "Type", "Status", "Pakai", "Expire", "Aksi"].map((h) => (
+              <th key={h} style={{
+                textAlign: "left", padding: "10px 14px",
+                fontSize: 10, fontWeight: 700, color: "var(--txt3)",
+                letterSpacing: "1px", textTransform: "uppercase",
+                borderBottom: "1px solid var(--line)", whiteSpace: "nowrap",
+              }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((row) => (
+            <tr key={row.id} style={{ borderBottom: "1px solid var(--line)", transition: "background .15s" }}
+              onMouseEnter={(e) => e.currentTarget.style.background = "var(--bg3)"}
+              onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+              <td style={{ padding: "12px 14px", color: "var(--txt)", fontFamily: "var(--mono)", fontSize: 12 }}>
+                <button onClick={() => onDetail(row.email)}
+                  style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "var(--mono)", textDecoration: "underline", padding: 0 }}>
+                  {row.email}
+                </button>
+              </td>
+              <td style={{ padding: "12px 14px", color: "var(--txt2)" }}>{row.label || "—"}</td>
+              <td style={{ padding: "12px 14px" }}>
+                <span style={{ ...badgeStyle, background: "var(--bg4)", color: "var(--txt2)", border: "1px solid var(--line)" }}>
+                  {row.access_type}
+                </span>
+              </td>
+              <td style={{ padding: "12px 14px" }}><StatusBadge row={row} /></td>
+              <td style={{ padding: "12px 14px", color: "var(--txt2)", fontFamily: "var(--mono)" }}>
+                {row.usage_count}/{row.usage_limit === -1 ? "∞" : row.usage_limit}
+                <span style={{ color: "var(--txt3)", marginLeft: 4 }}>
+                  (sisa {remainingUses(row)})
+                </span>
+              </td>
+              <td style={{ padding: "12px 14px", color: "var(--txt2)", fontSize: 11, whiteSpace: "nowrap" }}>
+                {row.expires_at ? (
+                  <span style={{ color: isExpired(row.expires_at) ? "#DC1F2E" : "var(--txt2)" }}>
+                    {fmtDateShort(row.expires_at)}
+                  </span>
+                ) : <span style={{ color: "var(--txt3)" }}>Tidak expire</span>}
+              </td>
+              <td style={{ padding: "12px 14px" }}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => onEdit(row)} style={actionBtn("#3b82f6")}>Edit</button>
+                  <button onClick={() => onRevoke(row)} style={actionBtn("#DC1F2E")}>Cabut</button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const actionBtn = (color) => ({
+  background: `${color}18`, border: `1px solid ${color}44`,
+  color, fontSize: 11, fontWeight: 700, padding: "4px 10px",
+  borderRadius: 6, cursor: "pointer", fontFamily: "inherit",
+  transition: "background .15s", whiteSpace: "nowrap",
+});
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+const TABS = ["Akses", "Blacklist", "Log"];
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+export default function AdminHarukaze() {
+  const { toasts, add: toast } = useToast();
+
+  // ── Auth ────────────────────────────────────────────────────────────────────
+  const [authed,       setAuthed]       = useState(false);
+  const [loginForm,    setLoginForm]    = useState({ username: "", password: "" });
+  const [loginError,   setLoginError]   = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  useEffect(() => {
+    if (sessionStorage.getItem("hkz_auth") === "1") setAuthed(true);
   }, []);
 
-  const pollUrl = activeServer === 2 ? pollUrlServer2 : pollUrlServer1;
-
-  // ── Load stream saat slug atau server berubah ─────────────────────────────
-  useEffect(() => {
-    if (!selectedSlug && activeServer === 1) return;
-
-    selectedSlugRef.current = selectedSlug;
-    activeServerRef.current = activeServer;
-    activeStreamRef.current = null;
-
-    let cancelled = false;
-
-    const load = async () => {
-      setStreamLoading(true);
-      setStreamError("");
-      setStreamData(null);
-      setActiveStream(null);
-      setStream2Info(null);
-
-      try {
-        let result;
-        if (activeServer === 2) {
-          result = await fetchStream2();
-          if (!cancelled) {
-            setStream2Info({
-              showId:  result.showId,
-              tokenId: result.tokenId,
-            });
-          }
-        } else {
-          if (!selectedSlug) { setStreamLoading(false); return; }
-          result = await fetchStreamFromApi(selectedSlug);
-        }
-
-        if (cancelled) return;
-        if (!result) { setStreamError("Stream URL tidak tersedia."); return; }
-
-        const best = result.sorted[0];
-        activeStreamRef.current = best;
-        setStreamData({ streams: result.streams, session: result.session });
-        setActiveStream(best);
-
-      } catch (e) {
-        if (!cancelled) setStreamError(e.message);
-      } finally {
-        if (!cancelled) setStreamLoading(false);
-      }
-    };
-
-    load();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSlug, activeServer]);
-
-  // ── Pilih resolusi manual ─────────────────────────────────────────────────
-  const handlePickQuality = (stream) => {
-    activeStreamRef.current = stream;
-    setActiveStream(stream);
-  };
-
-  // ── Ganti server ──────────────────────────────────────────────────────────
-  const handleServerChange = (serverNum) => {
-    if (serverNum === activeServer) return;
-    setActiveServer(serverNum);
-    activeServerRef.current = serverNum;
-    setStreamData(null);
-    setActiveStream(null);
-    setStreamError("");
-    setStream2Info(null);
-  };
-
-  // ── Retry ─────────────────────────────────────────────────────────────────
-  const handleRetry = () => {
-    if (activeServer === 2) {
-      setStreamData(null);
-      setActiveStream(null);
-      setStreamError("");
-      setStream2Info(null);
-      const sv = activeServer;
-      setActiveServer(0);
-      setTimeout(() => setActiveServer(sv), 50);
-    } else {
-      const s = selectedSlug;
-      setSelectedSlug(null);
-      setTimeout(() => setSelectedSlug(s), 50);
-    }
-  };
-
-  // ── Login / Logout ────────────────────────────────────────────────────────
   const handleLogin = (e) => {
     e.preventDefault();
     setLoginError("");
     setLoginLoading(true);
     setTimeout(() => {
       if (loginForm.username === ADMIN_USER && loginForm.password === ADMIN_PASS) {
-        sessionStorage.setItem("adminlive_auth", "1");
+        sessionStorage.setItem("hkz_auth", "1");
         setAuthed(true);
       } else {
         setLoginError("Username atau password salah.");
       }
       setLoginLoading(false);
-    }, 600);
+    }, 500);
   };
 
-  const handleLogout = () => {
-    sessionStorage.removeItem("adminlive_auth");
-    setAuthed(false);
-    setShows([]);
-    setStreamData(null);
-    setSelectedSlug(null);
-    setStream2Info(null);
-    selectedSlugRef.current = null;
-    activeStreamRef.current = null;
+  // ── Tab & Data ──────────────────────────────────────────────────────────────
+  const [tab,          setTab]          = useState(0);
+  const [accessList,   setAccessList]   = useState([]);
+  const [blacklist,    setBlacklist]    = useState([]);
+  const [logs,         setLogs]         = useState([]);
+  const [loadingA,     setLoadingA]     = useState(false);
+  const [loadingB,     setLoadingB]     = useState(false);
+  const [loadingL,     setLoadingL]     = useState(false);
+
+  // Filters
+  const [filterEmail,  setFilterEmail]  = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterType,   setFilterType]   = useState("");
+  const [page,         setPage]         = useState(1);
+  const [totalPages,   setTotalPages]   = useState(1);
+
+  // Modals
+  const [showGrant,    setShowGrant]    = useState(false);
+  const [showBlacklist,setShowBlacklist]= useState(false);
+  const [editAccess,   setEditAccess]   = useState(null);
+  const [detailEmail,  setDetailEmail]  = useState(null);
+
+  // ── Fetch Access ────────────────────────────────────────────────────────────
+  const fetchAccess = useCallback(async () => {
+    setLoadingA(true);
+    try {
+      const params = new URLSearchParams({ page, limit: 20 });
+      if (filterEmail)  params.set("email",       filterEmail);
+      if (filterStatus) params.set("is_active",   filterStatus);
+      if (filterType)   params.set("access_type", filterType);
+      const res = await apiFetch(`/list?${params}`);
+      if (res.status) {
+        setAccessList(res.data || []);
+        setTotalPages(res.pagination?.total_pages || 1);
+      }
+    } catch (e) { toast(e.message, "error"); }
+    finally { setLoadingA(false); }
+  }, [page, filterEmail, filterStatus, filterType]);
+
+  // ── Fetch Blacklist ─────────────────────────────────────────────────────────
+  const fetchBlacklist = useCallback(async () => {
+    setLoadingB(true);
+    try {
+      const res = await apiFetch("/blacklist/list");
+      if (res.status) setBlacklist(res.data || []);
+    } catch (e) { toast(e.message, "error"); }
+    finally { setLoadingB(false); }
+  }, []);
+
+  // ── Fetch Logs ──────────────────────────────────────────────────────────────
+  const fetchLogs = useCallback(async () => {
+    setLoadingL(true);
+    try {
+      const res = await apiFetch("/logs/recent?limit=100");
+      if (res.status) setLogs(res.data || []);
+    } catch (e) { toast(e.message, "error"); }
+    finally { setLoadingL(false); }
+  }, []);
+
+  useEffect(() => { if (authed) { fetchAccess(); fetchBlacklist(); fetchLogs(); } }, [authed]);
+  useEffect(() => { if (authed && tab === 0) fetchAccess(); }, [tab, page, filterEmail, filterStatus, filterType]);
+  useEffect(() => { if (authed && tab === 1) fetchBlacklist(); }, [tab]);
+  useEffect(() => { if (authed && tab === 2) fetchLogs(); }, [tab]);
+
+  // ── Revoke ──────────────────────────────────────────────────────────────────
+  const handleRevoke = async (row) => {
+    if (!confirm(`Cabut akses ${row.email}?`)) return;
+    try {
+      const res = await apiFetch(`/${row.id}`, { method: "DELETE" });
+      if (res.status) { toast("Akses dicabut"); fetchAccess(); }
+      else toast(res.message, "error");
+    } catch (e) { toast(e.message, "error"); }
+  };
+
+  // ── Remove Blacklist ────────────────────────────────────────────────────────
+  const handleRemoveBlacklist = async (email) => {
+    if (!confirm(`Hapus ${email} dari blacklist?`)) return;
+    try {
+      const res = await apiFetch(`/blacklist/${encodeURIComponent(email)}`, { method: "DELETE" });
+      if (res.status) { toast("Dihapus dari blacklist"); fetchBlacklist(); }
+      else toast(res.message, "error");
+    } catch (e) { toast(e.message, "error"); }
+  };
+
+  // ── Stats ───────────────────────────────────────────────────────────────────
+  const stats = {
+    total:    accessList.length,
+    active:   accessList.filter((r) => r.is_active && !isExpired(r.expires_at)).length,
+    expired:  accessList.filter((r) => isExpired(r.expires_at)).length,
+    blacklisted: blacklist.length,
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -543,45 +647,42 @@ export default function AdminLive() {
   if (!authed) {
     return (
       <>
-        <style>{globalStyles}</style>
-        <div className="al-login-bg">
-          <div className="al-noise" />
-          <div className="al-login-card">
-            <div className="al-logo">
-              <span className="al-logo-icon">⬡</span>
-              <span className="al-logo-text">ADMIN<em>LIVE</em></span>
+        <style>{styles}</style>
+        <div className="hkz-login-bg">
+          <div className="hkz-login-glow" />
+          <div className="hkz-login-card">
+            <div className="hkz-brand">
+              <div className="hkz-brand-icon">風</div>
+              <div>
+                <div className="hkz-brand-name">Harukaze48</div>
+                <div className="hkz-brand-sub">Admin Panel</div>
+              </div>
             </div>
-            <p className="al-login-sub">JKT48Connect Internal Panel</p>
-            <form onSubmit={handleLogin} className="al-form">
-              <div className="al-field">
-                <label>Username</label>
-                <input
-                  type="text"
-                  autoComplete="username"
+            <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <Field label="Username">
+                <input style={inputStyle} type="text" autoComplete="username"
                   value={loginForm.username}
                   onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
-                  placeholder="Enter username"
-                  required
-                />
-              </div>
-              <div className="al-field">
-                <label>Password</label>
-                <input
-                  type="password"
-                  autoComplete="current-password"
+                  placeholder="Username" required />
+              </Field>
+              <Field label="Password">
+                <input style={inputStyle} type="password" autoComplete="current-password"
                   value={loginForm.password}
                   onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                  placeholder="Enter password"
-                  required
-                />
-              </div>
-              {loginError && <div className="al-error">{loginError}</div>}
-              <button type="submit" className="al-btn-primary" disabled={loginLoading}>
-                {loginLoading ? <span className="al-spin" /> : "→ MASUK"}
+                  placeholder="Password" required />
+              </Field>
+              {loginError && (
+                <div style={{ background: "#DC1F2E18", border: "1px solid #DC1F2E44", color: "#ff8080", fontSize: 13, borderRadius: 8, padding: "9px 14px" }}>
+                  {loginError}
+                </div>
+              )}
+              <button type="submit" disabled={loginLoading} style={{ ...btnPrimaryStyle, marginTop: 4 }}>
+                {loginLoading ? <Spin /> : "Masuk →"}
               </button>
             </form>
           </div>
         </div>
+        <ToastContainer toasts={toasts} />
       </>
     );
   }
@@ -591,459 +692,329 @@ export default function AdminLive() {
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <>
-      <style>{globalStyles}</style>
-      <div className="al-dashboard">
-        <div className="al-noise" />
+      <style>{styles}</style>
 
-        <header className="al-header">
-          <div className="al-header-left">
-            <span className="al-logo-icon sm">⬡</span>
-            <span className="al-header-title">ADMINLIVE</span>
-            <span className="al-badge">ADMIN</span>
-          </div>
-          <div className="al-header-right">
-            <span className="al-today">📅 {todayWIB()} WIB</span>
-            <button className="al-btn-ghost" onClick={() => navigate(-1)}>← Back</button>
-            <button className="al-btn-danger" onClick={handleLogout}>Logout</button>
-          </div>
-        </header>
+      {/* Header */}
+      <header className="hkz-header">
+        <div className="hkz-header-left">
+          <div className="hkz-brand-icon sm">風</div>
+          <span className="hkz-header-title">Harukaze48</span>
+          <span className="hkz-admin-badge">ADMIN</span>
+        </div>
+        <div className="hkz-header-right">
+          <button onClick={() => { setShowGrant(true); }} style={{ ...btnPrimaryStyle, padding: "7px 14px", fontSize: 12 }}>
+            + Grant Akses
+          </button>
+          <button onClick={() => { setShowBlacklist(true); }}
+            style={{ background: "#DC1F2E18", border: "1px solid #DC1F2E44", color: "#DC1F2E", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            Blacklist
+          </button>
+          <button onClick={() => { sessionStorage.removeItem("hkz_auth"); setAuthed(false); }}
+            style={{ background: "none", border: "1px solid var(--line)", color: "var(--txt3)", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+            Logout
+          </button>
+        </div>
+      </header>
 
-        <div className="al-content">
-          <aside className="al-sidebar">
-            <div className="al-sidebar-head">
-              <h2>Show Hari Ini</h2>
-              <button className="al-btn-ghost sm" onClick={fetchShows} disabled={showsLoading} title="Refresh">
-                {showsLoading ? <span className="al-spin sm" /> : "↻"}
+      <div className="hkz-page">
+        {/* Stats */}
+        <div className="hkz-stats">
+          {[
+            { label: "Total Akses", val: stats.total, color: "var(--accent)" },
+            { label: "Aktif",       val: stats.active,      color: "#22c55e" },
+            { label: "Expired",     val: stats.expired,     color: "#f59e0b" },
+            { label: "Blacklist",   val: stats.blacklisted, color: "#DC1F2E" },
+          ].map((s) => (
+            <div key={s.label} className="hkz-stat-card">
+              <div style={{ fontSize: 28, fontWeight: 800, color: s.color }}>{s.val}</div>
+              <div style={{ fontSize: 11, color: "var(--txt3)", marginTop: 2, textTransform: "uppercase", letterSpacing: "0.8px" }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Tabs */}
+        <div className="hkz-tabs">
+          {TABS.map((t, i) => (
+            <button key={t} className={`hkz-tab ${tab === i ? "active" : ""}`} onClick={() => setTab(i)}>
+              {t}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Tab: Akses ── */}
+        {tab === 0 && (
+          <div className="hkz-card">
+            {/* Filters */}
+            <div className="hkz-filters">
+              <input style={{ ...inputStyle, maxWidth: 220 }}
+                placeholder="Cari email..."
+                value={filterEmail}
+                onChange={(e) => { setFilterEmail(e.target.value); setPage(1); }} />
+              <select style={{ ...inputStyle, maxWidth: 140 }}
+                value={filterStatus}
+                onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }}>
+                <option value="">Semua Status</option>
+                <option value="true">Aktif</option>
+                <option value="false">Nonaktif</option>
+              </select>
+              <select style={{ ...inputStyle, maxWidth: 140 }}
+                value={filterType}
+                onChange={(e) => { setFilterType(e.target.value); setPage(1); }}>
+                <option value="">Semua Type</option>
+                <option value="standard">Standard</option>
+                <option value="premium">Premium</option>
+                <option value="vip">VIP</option>
+              </select>
+              <button onClick={fetchAccess} style={{ background: "var(--bg3)", border: "1px solid var(--line)", color: "var(--txt2)", borderRadius: 8, padding: "8px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                ↻ Refresh
               </button>
             </div>
 
-            {showsError && <div className="al-error">{showsError}</div>}
+            <AccessTable
+              items={accessList}
+              loading={loadingA}
+              onEdit={setEditAccess}
+              onRevoke={handleRevoke}
+              onDetail={setDetailEmail}
+            />
 
-            {showsLoading && !shows.length && (
-              <div className="al-placeholder">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="al-skeleton" style={{ height: 80, marginBottom: 10 }} />
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "16px 0 4px" }}>
+                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+                  style={{ ...actionBtn("var(--accent)"), opacity: page === 1 ? 0.4 : 1 }}>← Prev</button>
+                <span style={{ color: "var(--txt2)", fontSize: 13 }}>{page} / {totalPages}</span>
+                <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                  style={{ ...actionBtn("var(--accent)"), opacity: page === totalPages ? 0.4 : 1 }}>Next →</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Tab: Blacklist ── */}
+        {tab === 1 && (
+          <div className="hkz-card">
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <span style={{ fontSize: 13, color: "var(--txt2)" }}>{blacklist.length} email di-blacklist</span>
+              <button onClick={fetchBlacklist} style={{ background: "var(--bg3)", border: "1px solid var(--line)", color: "var(--txt2)", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                ↻
+              </button>
+            </div>
+            {loadingB ? (
+              <div style={{ textAlign: "center", padding: "40px 0" }}><Spin xl /></div>
+            ) : blacklist.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 0", color: "var(--txt3)", fontSize: 14 }}>Tidak ada email di-blacklist</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {blacklist.map((b) => (
+                  <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--bg3)", border: "1px solid #DC1F2E22", borderRadius: 10, padding: "12px 16px" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--txt)", marginBottom: 3 }}>{b.email}</div>
+                      <div style={{ fontSize: 11, color: "var(--txt3)", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                        {b.reason && <span>Alasan: {b.reason}</span>}
+                        <span>Expire: {b.expires_at ? fmtDateShort(b.expires_at) : "Permanen"}</span>
+                        <span>Oleh: {b.created_by || "—"}</span>
+                        <span>Tanggal: {fmtDateShort(b.created_at)}</span>
+                      </div>
+                    </div>
+                    <button onClick={() => handleRemoveBlacklist(b.email)}
+                      style={{ ...actionBtn("#22c55e"), flexShrink: 0 }}>Hapus</button>
+                  </div>
                 ))}
               </div>
             )}
+          </div>
+        )}
 
-            {!showsLoading && !shows.length && !showsError && (
-              <div className="al-empty">Tidak ada show ditemukan untuk hari ini.</div>
-            )}
-
-            <div className="al-show-list">
-              {shows.map((item) => {
-                const isActive  = item.slug === selectedSlug;
-                const schedDate = tsToDate(item.scheduled_at || item.live_at);
-                const timeStr   = schedDate
-                  ? new Date(schedDate.getTime() + 7 * 3600 * 1000)
-                      .toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })
-                  : "—";
-
-                return (
-                  <button
-                    key={item.slug}
-                    className={`al-show-card ${isActive ? "active" : ""}`}
-                    onClick={() => { setSelectedSlug(item.slug); setSelectedShow(item); }}
-                  >
-                    <img
-                      src={item.image_url || item.creator?.image_url}
-                      alt={item.title}
-                      className="al-show-thumb"
-                      onError={(e) => { e.target.style.display = "none"; }}
-                    />
-                    <div className="al-show-info">
-                      <span className="al-show-title">{item.title}</span>
-                      <span className="al-show-meta">
-                        <span className={`al-dot ${item.status}`} />
-                        {item.status === "live" ? "LIVE" : item.status === "scheduled" ? `⏰ ${timeStr}` : item.status}
-                      </span>
-                      <span className="al-show-slug">{item.slug}</span>
-                    </div>
-                    {isActive && <span className="al-active-indicator">▶</span>}
-                  </button>
-                );
-              })}
+        {/* ── Tab: Log ── */}
+        {tab === 2 && (
+          <div className="hkz-card">
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <span style={{ fontSize: 13, color: "var(--txt2)" }}>100 log terbaru</span>
+              <button onClick={fetchLogs} style={{ background: "var(--bg3)", border: "1px solid var(--line)", color: "var(--txt2)", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                ↻
+              </button>
             </div>
-          </aside>
-
-          <main className="al-main">
-            {!selectedSlug && activeServer === 1 ? (
-              <div className="al-no-select">
-                <span style={{ fontSize: 48 }}>📺</span>
-                <p>Pilih show dari daftar untuk mulai streaming</p>
-              </div>
+            {loadingL ? (
+              <div style={{ textAlign: "center", padding: "40px 0" }}><Spin xl /></div>
+            ) : logs.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 0", color: "var(--txt3)", fontSize: 14 }}>Tidak ada log</div>
             ) : (
-              <>
-                {/* Meta bar Server 1 */}
-                {activeServer === 1 && selectedShow && (
-                  <div className="al-meta-bar">
-                    <img
-                      src={selectedShow.creator?.image_url}
-                      alt=""
-                      className="al-creator-img"
-                      onError={(e) => { e.target.style.display = "none"; }}
-                    />
-                    <div>
-                      <h1 className="al-stream-title">{selectedShow.title}</h1>
-                      <span className="al-stream-sub">
-                        {selectedShow.creator?.name} &nbsp;·&nbsp;
-                        <span className={`al-dot ${selectedShow.status}`} />
-                        {selectedShow.status?.toUpperCase()}
-                        {selectedShow.view_count > 0 && ` · 👁 ${selectedShow.view_count}`}
-                      </span>
-                    </div>
-                    <div className="al-price-badge">
-                      {selectedShow.idnliveplus?.liveroom_price ?? "—"} 🪙
-                    </div>
-                  </div>
-                )}
-
-                {/* Meta bar Server 2 */}
-                {activeServer === 2 && (
-                  <div className="al-meta-bar">
-                    <div className="al-s2-icon">📡</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 600, overflowY: "auto" }}>
+                {logs.map((l) => (
+                  <div key={l.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 14px", background: "var(--bg3)", borderRadius: 8, fontSize: 12 }}>
+                    <span style={{
+                      padding: "2px 8px", borderRadius: 4, fontWeight: 700, fontSize: 10,
+                      background: l.status === "success" ? "#22c55e22" : "#DC1F2E22",
+                      color: l.status === "success" ? "#22c55e" : "#DC1F2E",
+                      border: `1px solid ${l.status === "success" ? "#22c55e44" : "#DC1F2E44"}`,
+                      whiteSpace: "nowrap", flexShrink: 0,
+                    }}>{l.action}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <h1 className="al-stream-title">IDN Live Stream</h1>
-                      <span className="al-stream-sub">
-                        Show ID:&nbsp;
-                        <code style={{ fontFamily: "var(--mono)", color: "var(--accent2)" }}>
-                          {stream2Info?.showId || STREAM2_SHOW_ID}
-                        </code>
-                        &nbsp;·&nbsp;
-                        {streamLoading
-                          ? "Mengambil stream…"
-                          : streamData
-                          ? <><span className="al-dot live" /> Stream aktif</>
-                          : "Menunggu…"}
-                      </span>
-                      {/* Token ID info */}
-                      {stream2Info?.tokenId && (
-                        <span className="al-stream-sub" style={{ fontSize: 10, marginTop: 3, opacity: 0.7 }}>
-                          Token:&nbsp;
-                          <code style={{ fontFamily: "var(--mono)" }}>
-                            {stream2Info.tokenId.slice(0, 8)}…
-                          </code>
-                        </span>
-                      )}
-                      {/* Session broadcast info */}
-                      {streamData?.session?.["BROADCAST-ID"] && (
-                        <span className="al-stream-sub" style={{ fontSize: 10, marginTop: 2, opacity: 0.6 }}>
-                          Broadcast: {streamData.session["BROADCAST-ID"]}
-                          {streamData.session["CLUSTER"] && ` · ${streamData.session["CLUSTER"]}`}
-                          {streamData.session["USER-COUNTRY"] && ` · ${streamData.session["USER-COUNTRY"]}`}
-                        </span>
-                      )}
+                      <div style={{ color: "var(--txt)", marginBottom: 2, fontFamily: "var(--mono)", fontSize: 11 }}>{l.email}</div>
+                      {l.error_message && <div style={{ color: "#ff8080", fontSize: 11 }}>{l.error_message}</div>}
+                      {l.ip_address && <div style={{ color: "var(--txt3)", fontSize: 10 }}>IP: {l.ip_address}</div>}
                     </div>
-                    <div className="al-price-badge" style={{ borderColor: "#3b82f644", color: "#3b82f6", background: "#3b82f611" }}>
-                      📡 SERVER 2
-                    </div>
+                    <span style={{ color: "var(--txt3)", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0 }}>
+                      {fmtDate(l.created_at)}
+                    </span>
                   </div>
-                )}
-
-                {/* Server Toggle */}
-                <ServerBadge server={activeServer} onChange={handleServerChange} />
-
-                <div className="al-player-wrap">
-                  {streamLoading && (
-                    <div className="al-stream-loading">
-                      <div className="al-spin xl" />
-                      <p>Mengambil stream URL…</p>
-                      {activeServer === 2 && (
-                        <span style={{ color: "#444", fontSize: 12, marginTop: 4 }}>
-                          Menghubungi endpoint stream…
-                        </span>
-                      )}
-                    </div>
-                  )}
-
-                  {!streamLoading && streamError && (
-                    <div className="al-stream-err">
-                      <span style={{ fontSize: 36 }}>⚠️</span>
-                      <p>{streamError}</p>
-                      <button className="al-btn-primary sm" onClick={handleRetry}>
-                        Coba Lagi
-                      </button>
-                    </div>
-                  )}
-
-                  {!streamLoading && !streamError && activeStream?.url && (
-                    <HLSPlayer
-                      key={`${activeServer}-${selectedSlug || STREAM2_SHOW_ID}`}
-                      src={activeStream.url}
-                      title={
-                        activeServer === 2
-                          ? `IDN Live – ${stream2Info?.showId || STREAM2_SHOW_ID}`
-                          : (selectedShow?.title || selectedSlug)
-                      }
-                      pollUrl={pollUrl}
-                    />
-                  )}
-
-                  {!streamLoading && !streamError && streamData && !activeStream?.url && (
-                    <div className="al-stream-err">
-                      <span style={{ fontSize: 36 }}>📭</span>
-                      <p>Stream URL tidak tersedia.</p>
-                      <span style={{ color: "#555", fontSize: 12 }}>
-                        {activeServer === 2
-                          ? "Show ID: " + (stream2Info?.showId || STREAM2_SHOW_ID)
-                          : "Status: " + selectedShow?.status}
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Quality selector */}
-                {streamData?.streams?.length > 0 && (
-                  <div className="al-quality-row">
-                    <span className="al-quality-label">Kualitas:</span>
-                    {[...streamData.streams]
-                      .sort((a, b) => Number(b.BANDWIDTH || 0) - Number(a.BANDWIDTH || 0))
-                      .map((s) => {
-                        const isQActive = activeStream?.NAME === s.NAME || activeStream?.url === s.url;
-                        return (
-                          <button
-                            key={s["GROUP-ID"] || s.NAME || s.url}
-                            className={`al-quality-chip ${isQActive ? "active" : ""}`}
-                            onClick={() => handlePickQuality(s)}
-                            title={`${s.RESOLUTION || ""} · ${Math.round(Number(s.BANDWIDTH || 0) / 1000)}kbps`}
-                          >
-                            {s.NAME || "default"}
-                            {s.RESOLUTION && <em> {s.RESOLUTION}</em>}
-                          </button>
-                        );
-                      })}
-                  </div>
-                )}
-
-                {/* Session info */}
-                {streamData?.session && Object.keys(streamData.session).length > 0 && (
-                  <div className="al-session-row">
-                    {["BROADCAST-ID", "VIDEO-SESSION-ID", "STREAM-TIME", "CLUSTER", "USER-COUNTRY"].map((key) =>
-                      streamData.session[key] ? (
-                        <span key={key} className="al-session-chip">
-                          <em>{key}:</em> {streamData.session[key]}
-                        </span>
-                      ) : null
-                    )}
-                  </div>
-                )}
-
-                {/* Slug row (server 1 only) */}
-                {activeServer === 1 && selectedSlug && (
-                  <div className="al-slug-row">
-                    <span className="al-slug-label">Slug:</span>
-                    <code className="al-slug-code">{selectedSlug}</code>
-                    <button
-                      className="al-btn-ghost sm"
-                      onClick={() => navigator.clipboard?.writeText(selectedSlug)}
-                      title="Copy slug"
-                    >
-                      📋
-                    </button>
-                  </div>
-                )}
-
-                {/* Stream URL row (server 2) */}
-                {activeServer === 2 && activeStream?.url && (
-                  <div className="al-slug-row">
-                    <span className="al-slug-label">Stream URL:</span>
-                    <code className="al-slug-code">{activeStream.url}</code>
-                    <button
-                      className="al-btn-ghost sm"
-                      onClick={() => navigator.clipboard?.writeText(activeStream.url)}
-                      title="Copy URL"
-                    >
-                      📋
-                    </button>
-                  </div>
-                )}
-
-                {activeServer === 1 && selectedShow?.idnliveplus?.description && (
-                  <div className="al-desc">
-                    <h4>Deskripsi</h4>
-                    <p>{selectedShow.idnliveplus.description}</p>
-                  </div>
-                )}
-              </>
+                ))}
+              </div>
             )}
-
-            {/* Server 2 tanpa show selected */}
-            {activeServer === 2 && !selectedSlug && (
-              <>
-                <ServerBadge server={activeServer} onChange={handleServerChange} />
-                <div className="al-player-wrap">
-                  {streamLoading && (
-                    <div className="al-stream-loading">
-                      <div className="al-spin xl" />
-                      <p>Mengambil stream URL…</p>
-                    </div>
-                  )}
-                  {!streamLoading && streamError && (
-                    <div className="al-stream-err">
-                      <span style={{ fontSize: 36 }}>⚠️</span>
-                      <p>{streamError}</p>
-                      <button className="al-btn-primary sm" onClick={handleRetry}>Coba Lagi</button>
-                    </div>
-                  )}
-                  {!streamLoading && !streamError && activeStream?.url && (
-                    <HLSPlayer
-                      key="server2-noshow"
-                      src={activeStream.url}
-                      title={`IDN Live – ${stream2Info?.showId || STREAM2_SHOW_ID}`}
-                      pollUrl={pollUrl}
-                    />
-                  )}
-                </div>
-              </>
-            )}
-          </main>
-        </div>
+          </div>
+        )}
       </div>
+
+      {/* Modals */}
+      {showGrant    && <GrantModal     onClose={() => setShowGrant(false)}     onSuccess={fetchAccess} toast={toast} />}
+      {showBlacklist&& <BlacklistModal onClose={() => setShowBlacklist(false)} onSuccess={fetchBlacklist} toast={toast} />}
+      {editAccess   && <EditModal      access={editAccess} onClose={() => setEditAccess(null)} onSuccess={fetchAccess} toast={toast} />}
+      {detailEmail  && <DetailModal    email={detailEmail} onClose={() => setDetailEmail(null)} toast={toast} />}
+
+      <ToastContainer toasts={toasts} />
     </>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-const globalStyles = `
-  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&family=Inter:wght@400;500;600&display=swap');
+const styles = `
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&family=Inter:wght@400;500;600;700&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --red:     #DC1F2E;
-    --red-dim: #DC1F2E22;
-    --red-mid: #DC1F2E55;
-    --accent2: #3b82f6;
-    --a2-dim:  #3b82f611;
-    --a2-mid:  #3b82f644;
-    --bg:      #080808;
-    --bg2:     #111111;
-    --bg3:     #181818;
-    --bg4:     #222222;
-    --line:    #2a2a2a;
-    --txt:     #e8e8e8;
-    --txt2:    #888;
-    --txt3:    #444;
-    --mono:    'DM Mono', monospace;
-    --sans:    'Inter', sans-serif;
-    --display: 'Syne', sans-serif;
+    --accent:      #a78bfa;
+    --accent-glow: rgba(167,139,250,0.25);
+    --bg:          #080810;
+    --bg2:         #0e0e1a;
+    --bg3:         #141424;
+    --bg4:         #1c1c2e;
+    --line:        #1e1e30;
+    --txt:         #e8e8f0;
+    --txt2:        #7878a8;
+    --txt3:        #3a3a5c;
+    --mono:        'DM Mono', monospace;
+    --sans:        'Inter', sans-serif;
+    --display:     'Syne', sans-serif;
   }
-  @keyframes spin      { to { transform: rotate(360deg); } }
-  @keyframes fadeIn    { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-  @keyframes pulse     { 0%,100% { opacity:1 } 50% { opacity:.4 } }
-  @keyframes shimmer   { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
-  @keyframes bluePulse { 0%,100% { box-shadow: 0 0 0 0 #3b82f633; } 50% { box-shadow: 0 0 0 6px #3b82f600; } }
+  @keyframes spin       { to { transform: rotate(360deg); } }
+  @keyframes fadeInUp   { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes shimmer    { 0% { opacity: .4 } 50% { opacity: 1 } 100% { opacity: .4 } }
 
-  .al-noise { pointer-events: none; position: fixed; inset: 0; z-index: 0; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E"); background-size: 200px; opacity: .5; }
+  body { background: var(--bg); font-family: var(--sans); color: var(--txt); min-height: 100vh; }
 
-  .al-login-bg { min-height: 100vh; background: var(--bg); display: flex; align-items: center; justify-content: center; font-family: var(--sans); position: relative; }
-  .al-login-bg::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse 60% 50% at 50% 50%, #DC1F2E0a 0%, transparent 70%); pointer-events: none; }
-  .al-login-card { position: relative; z-index: 1; width: min(420px, 92vw); background: var(--bg2); border: 1px solid var(--line); border-radius: 16px; padding: 40px 36px; animation: fadeIn .5s ease; box-shadow: 0 32px 80px #00000088, 0 0 0 1px #ffffff06 inset; }
-  .al-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-  .al-logo-icon { font-size: 28px; color: var(--red); filter: drop-shadow(0 0 8px var(--red)); }
-  .al-logo-icon.sm { font-size: 18px; }
-  .al-logo-text { font-family: var(--display); font-size: 22px; font-weight: 800; color: var(--txt); letter-spacing: 3px; }
-  .al-logo-text em { color: var(--red); font-style: normal; }
-  .al-login-sub { color: var(--txt3); font-size: 12px; letter-spacing: 1px; margin-bottom: 32px; }
-  .al-form { display: flex; flex-direction: column; gap: 16px; }
-  .al-field { display: flex; flex-direction: column; gap: 6px; }
-  .al-field label { font-size: 11px; font-weight: 600; color: var(--txt2); letter-spacing: 1.5px; text-transform: uppercase; }
-  .al-field input { background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 11px 14px; color: var(--txt); font-size: 14px; font-family: var(--sans); outline: none; transition: border-color .2s, box-shadow .2s; }
-  .al-field input:focus { border-color: var(--red-mid); box-shadow: 0 0 0 3px var(--red-dim); }
-  .al-error { background: #DC1F2E18; border: 1px solid #DC1F2E44; color: #ff6b6b; font-size: 13px; border-radius: 8px; padding: 10px 14px; }
-  .al-btn-primary { display: flex; align-items: center; justify-content: center; gap: 8px; background: var(--red); color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 13px; font-weight: 700; letter-spacing: 2px; cursor: pointer; font-family: var(--display); transition: opacity .2s, transform .1s; }
-  .al-btn-primary:hover { opacity: .88; }
-  .al-btn-primary:active { transform: scale(.98); }
-  .al-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
-  .al-btn-primary.sm { padding: 8px 14px; font-size: 12px; }
-  .al-btn-ghost { background: transparent; border: 1px solid var(--line); color: var(--txt2); border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; transition: border-color .2s, color .2s; font-family: var(--sans); }
-  .al-btn-ghost:hover { border-color: var(--txt3); color: var(--txt); }
-  .al-btn-ghost.sm { padding: 5px 10px; font-size: 12px; }
-  .al-btn-danger { background: transparent; border: 1px solid #DC1F2E44; color: var(--red); border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; transition: background .2s; font-family: var(--sans); }
-  .al-btn-danger:hover { background: var(--red-dim); }
-  .al-spin { display: inline-block; width: 18px; height: 18px; border: 2px solid #ffffff33; border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
-  .al-spin.sm { width: 13px; height: 13px; }
-  .al-spin.xl { width: 40px; height: 40px; border-width: 3px; border-top-color: var(--red); border-color: var(--red-dim); }
+  /* ── Login ── */
+  .hkz-login-bg {
+    min-height: 100vh; background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px; position: relative; overflow: hidden;
+  }
+  .hkz-login-glow {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 60% 60% at 50% 50%, rgba(167,139,250,0.07) 0%, transparent 70%);
+  }
+  .hkz-login-card {
+    position: relative; z-index: 1;
+    width: min(420px, 100%); background: var(--bg2);
+    border: 1px solid var(--line); border-radius: 20px;
+    padding: 36px 32px; box-shadow: 0 32px 80px #00000088;
+    animation: fadeInUp .4s ease;
+  }
+  .hkz-brand { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
+  .hkz-brand-icon {
+    width: 52px; height: 52px; border-radius: 14px;
+    background: linear-gradient(135deg, rgba(167,139,250,0.2), rgba(139,92,246,0.1));
+    border: 1px solid rgba(167,139,250,0.3);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-family: serif; color: var(--accent);
+    flex-shrink: 0;
+  }
+  .hkz-brand-icon.sm { width: 34px; height: 34px; font-size: 16px; border-radius: 9px; }
+  .hkz-brand-name { font-family: var(--display); font-size: 20px; font-weight: 800; color: var(--txt); letter-spacing: -0.3px; }
+  .hkz-brand-sub  { font-size: 12px; color: var(--txt3); margin-top: 2px; }
 
-  .al-dashboard { min-height: 100vh; background: var(--bg); font-family: var(--sans); color: var(--txt); position: relative; display: flex; flex-direction: column; }
-  .al-header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; height: 56px; background: var(--bg2); border-bottom: 1px solid var(--line); backdrop-filter: blur(12px); }
-  .al-header-left { display: flex; align-items: center; gap: 10px; }
-  .al-header-title { font-family: var(--display); font-size: 15px; font-weight: 800; letter-spacing: 3px; color: var(--txt); }
-  .al-badge { background: var(--red); color: #fff; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; padding: 2px 7px; border-radius: 4px; }
-  .al-header-right { display: flex; align-items: center; gap: 10px; }
-  .al-today { color: var(--txt2); font-size: 12px; font-family: var(--mono); }
+  /* ── Header ── */
+  .hkz-header {
+    position: sticky; top: 0; z-index: 200;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 24px; height: 56px;
+    background: var(--bg2); border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(12px);
+  }
+  .hkz-header-left  { display: flex; align-items: center; gap: 10px; }
+  .hkz-header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .hkz-header-title { font-family: var(--display); font-size: 15px; font-weight: 800; letter-spacing: 1px; }
+  .hkz-admin-badge  {
+    background: var(--accent); color: #fff;
+    font-size: 9px; font-weight: 700; letter-spacing: 1.5px;
+    padding: 2px 8px; border-radius: 4px;
+  }
 
-  .al-content { flex: 1; display: flex; position: relative; z-index: 1; }
-  .al-sidebar { width: 320px; min-width: 280px; background: var(--bg2); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 20px 16px; overflow-y: auto; max-height: calc(100vh - 56px); position: sticky; top: 56px; gap: 12px; }
-  .al-sidebar-head { display: flex; align-items: center; justify-content: space-between; }
-  .al-sidebar-head h2 { font-family: var(--display); font-size: 14px; font-weight: 800; letter-spacing: 2px; color: var(--txt2); text-transform: uppercase; }
-  .al-show-list { display: flex; flex-direction: column; gap: 8px; }
-  .al-show-card { display: flex; align-items: flex-start; gap: 10px; background: var(--bg3); border: 1px solid var(--line); border-radius: 10px; padding: 10px; cursor: pointer; text-align: left; transition: border-color .2s, background .2s; position: relative; width: 100%; }
-  .al-show-card:hover { border-color: var(--txt3); background: var(--bg4); }
-  .al-show-card.active { border-color: var(--red-mid); background: var(--red-dim); }
-  .al-show-thumb { width: 56px; height: 40px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: var(--bg4); }
-  .al-show-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-  .al-show-title { font-size: 12px; font-weight: 600; color: var(--txt); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .al-show-meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--txt2); font-family: var(--mono); }
-  .al-show-slug { font-family: var(--mono); font-size: 9px; color: var(--txt3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .al-active-indicator { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--red); font-size: 10px; }
-  .al-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-  .al-dot.live      { background: #22c55e; animation: pulse 1.5s infinite; }
-  .al-dot.scheduled { background: #f59e0b; }
-  .al-dot.ended     { background: #555; }
-  .al-skeleton { background: linear-gradient(90deg, var(--bg3) 25%, var(--bg4) 50%, var(--bg3) 75%); background-size: 400px 100%; animation: shimmer 1.4s infinite linear; border-radius: 8px; }
-  .al-empty { color: var(--txt3); font-size: 13px; text-align: center; padding: 24px 0; }
+  /* ── Page ── */
+  .hkz-page {
+    max-width: 1200px; margin: 0 auto;
+    padding: 24px 20px 80px;
+    display: flex; flex-direction: column; gap: 20px;
+  }
 
-  .al-main { flex: 1; padding: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; animation: fadeIn .3s ease; }
-  .al-no-select { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--txt3); font-size: 15px; text-align: center; padding: 60px 0; }
-  .al-meta-bar { display: flex; align-items: flex-start; gap: 14px; background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; }
-  .al-creator-img { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex-shrink: 0; border: 2px solid var(--line); }
-  .al-s2-icon { width: 44px; height: 44px; border-radius: 50%; background: var(--a2-dim); border: 2px solid var(--a2-mid); display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; animation: bluePulse 2s infinite; }
-  .al-stream-title { font-family: var(--display); font-size: 16px; font-weight: 800; color: var(--txt); line-height: 1.2; }
-  .al-stream-sub { display: flex; align-items: center; gap: 6px; color: var(--txt2); font-size: 12px; font-family: var(--mono); margin-top: 4px; flex-wrap: wrap; }
-  .al-price-badge { margin-left: auto; flex-shrink: 0; background: #f59e0b22; border: 1px solid #f59e0b44; color: #f59e0b; font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 20px; font-family: var(--mono); }
-  .al-player-wrap { border-radius: 12px; overflow: hidden; background: #000; border: 1px solid var(--line); min-height: 200px; position: relative; }
-  .al-stream-loading, .al-stream-err { min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; color: var(--txt2); font-size: 14px; background: var(--bg3); }
+  /* ── Stats ── */
+  .hkz-stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+  }
+  .hkz-stat-card {
+    background: var(--bg2); border: 1px solid var(--line);
+    border-radius: 14px; padding: 18px 20px;
+    transition: border-color .2s;
+  }
+  .hkz-stat-card:hover { border-color: rgba(167,139,250,0.2); }
 
-  .al-quality-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .al-quality-label { color: var(--txt3); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
-  .al-quality-chip { background: var(--bg3); border: 1px solid var(--line); color: var(--txt2); font-size: 11px; padding: 3px 10px; border-radius: 20px; font-family: var(--mono); cursor: pointer; transition: border-color .15s, background .15s; }
-  .al-quality-chip:hover { border-color: var(--txt3); color: var(--txt); }
-  .al-quality-chip.active { background: var(--red-dim); border-color: var(--red-mid); color: var(--txt); }
-  .al-quality-chip em { color: var(--txt3); font-style: normal; margin-left: 4px; }
-  .al-quality-chip.active em { color: var(--red); }
+  /* ── Tabs ── */
+  .hkz-tabs {
+    display: flex; gap: 4; background: var(--bg2);
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 4px; width: fit-content;
+  }
+  .hkz-tab {
+    padding: 8px 20px; border-radius: 9px; border: none;
+    background: none; color: var(--txt2); font-size: 13px;
+    font-weight: 600; cursor: pointer; font-family: var(--sans);
+    transition: background .2s, color .2s;
+  }
+  .hkz-tab.active { background: var(--accent); color: #fff; }
+  .hkz-tab:not(.active):hover { color: var(--txt); background: var(--bg3); }
 
-  .al-session-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .al-session-chip { background: var(--bg3); border: 1px solid var(--line); color: var(--txt2); font-size: 10px; padding: 2px 8px; border-radius: 4px; font-family: var(--mono); }
-  .al-session-chip em { color: var(--txt3); font-style: normal; margin-right: 4px; }
+  /* ── Card ── */
+  .hkz-card {
+    background: var(--bg2); border: 1px solid var(--line);
+    border-radius: 16px; padding: 20px; overflow: hidden;
+    animation: fadeInUp .25s ease;
+  }
 
-  .al-slug-row { display: flex; align-items: center; gap: 8px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
-  .al-slug-label { color: var(--txt3); font-size: 11px; flex-shrink: 0; }
-  .al-slug-code { flex: 1; font-family: var(--mono); font-size: 12px; color: var(--txt2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .al-desc { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
-  .al-desc h4 { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--txt3); text-transform: uppercase; margin-bottom: 8px; }
-  .al-desc p { font-size: 13px; color: var(--txt2); line-height: 1.7; white-space: pre-line; }
+  /* ── Filters ── */
+  .hkz-filters {
+    display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px;
+    padding-bottom: 16px; border-bottom: 1px solid var(--line);
+  }
 
-  .al-server-toggle { display: flex; align-items: center; gap: 12px; background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; }
-  .al-server-label { color: var(--txt3); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; font-family: var(--mono); flex-shrink: 0; }
-  .al-server-pills { display: flex; gap: 8px; flex-wrap: wrap; }
-  .al-server-pill { display: flex; align-items: center; gap: 7px; background: var(--bg3); border: 1px solid var(--line); color: var(--txt2); font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 20px; cursor: pointer; transition: all .2s; font-family: var(--sans); }
-  .al-server-pill em { font-style: normal; font-size: 10px; color: var(--txt3); font-family: var(--mono); margin-left: 2px; }
-  .al-server-pill:hover { border-color: var(--txt3); color: var(--txt); }
-  .al-server-pill.active { color: var(--txt); font-weight: 700; }
-  .al-server-pill:nth-child(1).active { border-color: var(--red-mid); background: var(--red-dim); }
-  .al-server-pill:nth-child(1).active em { color: var(--red); }
-  .al-server-pill:nth-child(2).active { border-color: var(--a2-mid); background: var(--a2-dim); }
-  .al-server-pill:nth-child(2).active em { color: var(--accent2); }
-  .al-server-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-  .al-server-dot.s1 { background: var(--red); }
-  .al-server-dot.s2 { background: var(--accent2); }
-
-  @media (max-width: 768px) {
-    .al-content { flex-direction: column; }
-    .al-sidebar { width: 100%; position: static; max-height: 280px; border-right: none; border-bottom: 1px solid var(--line); }
-    .al-today { display: none; }
-    .al-show-list { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
-    .al-show-card { min-width: 200px; }
-    .al-server-toggle { flex-wrap: wrap; }
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    .hkz-stats { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 640px) {
+    .hkz-header { padding: 0 14px; height: 52px; }
+    .hkz-header-right { gap: 6px; }
+    .hkz-header-right button { padding: 6px 10px !important; font-size: 11px !important; }
+    .hkz-page { padding: 14px 12px 60px; gap: 14px; }
+    .hkz-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .hkz-stat-card { padding: 14px 16px; }
+    .hkz-card { padding: 14px; }
+    .hkz-filters { gap: 8px; }
+    .hkz-filters input,
+    .hkz-filters select { max-width: 100% !important; font-size: 12px; }
+    .hkz-tabs { width: 100%; }
+    .hkz-tab { flex: 1; padding: 8px 10px; font-size: 12px; }
+    .hkz-login-card { padding: 24px 20px; }
+  }
+  @media (max-width: 480px) {
+    .hkz-stats { grid-template-columns: 1fr 1fr; }
   }
 `;
