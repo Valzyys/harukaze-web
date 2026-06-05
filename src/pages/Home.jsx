@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import "../styles/home.css";
 
 // ── API Config ──────────────────────────────────────────────────────────────
-const API_BASE = "https://v2.jkt48connect.com/api";
+const API_BASE = "https://v5.jkt48connect.com/api";
 const API_KEY = "JKTCONNECT";
 const MUX_API = `${API_BASE}/mux/live-streams?apikey=${API_KEY}&username=vzy&password=vzy`;
 const IDN_PLUS_API = `${API_BASE}/jkt48/idnplus?apikey=${API_KEY}`;
@@ -518,7 +518,7 @@ function AppBannerSection() {
 // ══════════════════════════════════════════════════════════════════════════════
 //  NEWS SECTION
 // ══════════════════════════════════════════════════════════════════════════════
-const NEWS_API = `https://v2.jkt48connect.com/api/jkt48/NEWS?apikey=JKTCONNECT`;
+const NEWS_API = `https://v5.jkt48connect.com/api/jkt48/NEWS?apikey=JKTCONNECT`;
 
 const categoryColor = {
   Theater:  { bg: "rgba(220,31,46,0.15)",  color: "#DC1F2E" },
