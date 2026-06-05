@@ -695,26 +695,33 @@ export default function AdminHarukaze() {
       <style>{styles}</style>
 
       {/* Header */}
-      <header className="hkz-header">
-        <div className="hkz-header-left">
-          <div className="hkz-brand-icon sm">風</div>
-          <span className="hkz-header-title">Harukaze48</span>
-          <span className="hkz-admin-badge">ADMIN</span>
-        </div>
-        <div className="hkz-header-right">
-          <button onClick={() => { setShowGrant(true); }} style={{ ...btnPrimaryStyle, padding: "7px 14px", fontSize: 12 }}>
-            + Grant Akses
-          </button>
-          <button onClick={() => { setShowBlacklist(true); }}
-            style={{ background: "#DC1F2E18", border: "1px solid #DC1F2E44", color: "#DC1F2E", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-            Blacklist
-          </button>
-          <button onClick={() => { sessionStorage.removeItem("hkz_auth"); setAuthed(false); }}
-            style={{ background: "none", border: "1px solid var(--line)", color: "var(--txt3)", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
-            Logout
-          </button>
-        </div>
-      </header>
+     <header className="hkz-header">
+  <div className="hkz-header-left">
+    <div className="hkz-brand-icon sm">風</div>
+    <span className="hkz-header-title">Harukaze48</span>
+    <span className="hkz-admin-badge">ADMIN</span>
+    {/* Logout pindah ke sini, tapi di desktop tetap di kanan via margin-left auto */}
+    <button
+      onClick={() => { sessionStorage.removeItem("hkz_auth"); setAuthed(false); }}
+      style={{
+        marginLeft: "auto",
+        background: "none", border: "1px solid var(--line)",
+        color: "var(--txt3)", borderRadius: 8, padding: "7px 14px",
+        fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+      }}>
+      Logout
+    </button>
+  </div>
+  <div className="hkz-header-right">
+    <button onClick={() => setShowGrant(true)} style={{ ...btnPrimaryStyle, padding: "7px 14px", fontSize: 12, flex: 1 }}>
+      + Grant Akses
+    </button>
+    <button onClick={() => setShowBlacklist(true)}
+      style={{ flex: 1, background: "#DC1F2E18", border: "1px solid #DC1F2E44", color: "#DC1F2E", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+      Blacklist
+    </button>
+  </div>
+</header>
 
       <div className="hkz-page">
         {/* Stats */}
