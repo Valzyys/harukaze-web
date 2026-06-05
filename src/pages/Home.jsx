@@ -940,65 +940,25 @@ function LiveShowsSection() {
 
   const fetchLiveShows = useCallback(async () => {
     try {
-      let liveShows = [];
+      const res = await fetch(IDN_PLUS_API);
+      const result = await res.json();
 
-      // Cek IDN Plus terlebih dahulu
-      try {
-        const resIdn = await fetch(IDN_PLUS_API);
-        const resultIdn = await resIdn.json();
-        if (resultIdn.status === 200 && resultIdn.data?.length > 0) {
-          const activeIdn = resultIdn.data.filter((s) => s.status === "live");
-          if (activeIdn.length > 0) {
-            liveShows = activeIdn.map((s) => ({
-              id: s.slug || `idn-${s.id}`,
-              title: s.title || "Live Stream JKT48",
-              host: s.creator?.name || "JKT48",
-              thumbnail:
-                s.image_url || DEFAULT_IMG,
-              streamUrl: `/live/${s.slug}`,
-              server: "idn",
-            }));
-          }
-        }
-      } catch (idnError) {
-        console.error("Error fetching IDN Plus live:", idnError);
+      if (result.status === 200 && Array.isArray(result.data)) {
+        const liveShows = result.data
+          .filter((s) => s.status === "live")
+          .map((s) => ({
+            id: s.slug,
+            title: s.title,
+            host: s.creator?.name || "JKT48",
+            thumbnail: s.image_url || DEFAULT_IMG,
+            streamUrl: s.showId ? `/live/${s.slug}` : `/live/${s.slug}`,
+            showId: s.showId || null,
+            server: "idn",
+          }));
+        setShows(liveShows);
+      } else {
+        setShows([]);
       }
-
-      // Jika tidak ada live di IDN Plus, fallback ke MUX
-      if (liveShows.length === 0) {
-        try {
-          const resMux = await fetch(MUX_API);
-          const resultMux = await resMux.json();
-
-          if (resultMux.success && resultMux.data?.data) {
-            liveShows = resultMux.data.data
-              .filter((s) => s.status === "active" && s.connected === true)
-              .map((s) => {
-                const now = new Date();
-                const dd = String(now.getDate()).padStart(2, "0");
-                const mm = String(now.getMonth() + 1).padStart(2, "0");
-                const yy = String(now.getFullYear()).slice(-2);
-                const playbackId = s.playback_ids?.[0]?.id || "";
-
-                return {
-                  id: s.id,
-                  title: `Show ${dd}-${mm}-${yy}`,
-                  host: "GStream Team",
-                  thumbnail: playbackId
-                    ? `https://image.mux.com/${playbackId}/thumbnail.jpg?time=0`
-                    : DEFAULT_IMG,
-                  playbackId,
-                  streamUrl: `/live/${playbackId}`,
-                  server: "mux",
-                };
-              });
-          }
-        } catch (muxError) {
-          console.error("Error fetching MUX live:", muxError);
-        }
-      }
-
-      setShows(liveShows);
     } catch (e) {
       console.error("Error fetching live shows:", e);
       setShows([]);
