@@ -1,6 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import MuxPlayer from "@mux/mux-player-react";
 import Hls from "hls.js";
 import { createClient } from "@supabase/supabase-js";
 import "../styles/live-stream.css";
@@ -11,6 +10,93 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 const HARUKAZE_API = "https://v5.jkt48connect.com/api/harukaze";
 const HARUKAZE_KEY = "JKTCONNECT";
+const TOKEN_API_BASE = "https://v5.jkt48connect.com";
+const CTV_BASE       = "https://ctv.jkt48connect.com";
+const SIGNING_PATH   = "/api/token/generate?apikey=JKTCONNECT";
+const PARTNER_KID    = "jkt48connect-v1";
+const PARTNER_SECRET = "gstream@jkt48connect@2108";
+
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function hmacSHA256Hex(secret, message) {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const buf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function buildHMACHeaders() {
+  const timestamp  = Date.now().toString();
+  const nonce      = crypto.randomUUID().replace(/-/g, "");
+  const bodyHash   = await sha256Hex("{}");
+  const signingStr = `${timestamp}:${nonce}:POST:${SIGNING_PATH}:${bodyHash}`;
+  const signature  = await hmacSHA256Hex(PARTNER_SECRET, signingStr);
+  return {
+    "x-kid":       PARTNER_KID,
+    "x-timestamp": timestamp,
+    "x-nonce":     nonce,
+    "x-signature": signature,
+  };
+}
+
+async function generateStreamToken(slugOrId, isSlug) {
+  const hmacHeaders = await buildHMACHeaders();
+  const res = await fetch(`${TOKEN_API_BASE}${SIGNING_PATH}`, {
+    method: "POST",
+    headers: {
+      ...hmacHeaders,
+      ...(isSlug ? { "x-slug": slugOrId } : { "x-showid": slugOrId }),
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error("Token server returned non-JSON"); }
+  if (!data.status) throw new Error("Generate token gagal: " + data.message);
+  return data.data.token;
+}
+
+async function getStreamURL(token, slugOrId, isSlug) {
+  const param = isSlug ? `slug=${slugOrId}` : `showId=${slugOrId}`;
+  const res = await fetch(`${CTV_BASE}/stream?${param}`, {
+    headers: {
+      "x-api-token": token,
+      ...(isSlug ? { "x-slug": slugOrId } : { "x-showid": slugOrId }),
+    },
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || "Gagal mendapatkan stream URL");
+
+  const streams = data.streams || [];
+  const sorted = streams
+    .filter(s => s?.url)
+    .sort((a, b) => parseInt(b.BANDWIDTH || 0) - parseInt(a.BANDWIDTH || 0));
+
+  const autoUrl = sorted[0]?.url || "";
+
+  const qualities = sorted.map((s, idx) => ({
+    index:           idx,
+    name:            s.NAME || `${s.RESOLUTION?.split("x")[1] || "?"}p`,
+    quality:         s.NAME || `q${idx}`,
+    bandwidth:       parseInt(s.BANDWIDTH) || 0,
+    bandwidth_label: s.BANDWIDTH
+      ? parseInt(s.BANDWIDTH) >= 1_000_000
+        ? (parseInt(s.BANDWIDTH) / 1_000_000).toFixed(1) + " Mbps"
+        : Math.round(parseInt(s.BANDWIDTH) / 1_000) + " Kbps"
+      : "",
+    resolution:  s.RESOLUTION || "",
+    fps:         s["FRAME-RATE"] || "",
+    manual_url:  s.url || "",
+  }));
+
+  return { url: autoUrl, qualities };
+}
 
 const harukazeFetch = async (path, opts = {}) => {
   const url = `${HARUKAZE_API}${path}${path.includes("?") ? "&" : "?"}apikey=${HARUKAZE_KEY}`;
@@ -57,83 +143,118 @@ function ResolutionSelector({ streams, currentUrl, onSelect }) {
 }
 
 // ── HLS Player ─────────────────────────────────────────────────────────────────
-function HlsPlayer({ src, title, streams, onResolutionChange }) {
+function HlsPlayer({ src, title, streams, onResolutionChange, token }) {
   const videoRef = useRef(null);
   const hlsRef   = useRef(null);
+  const [showQualityPanel, setShowQualityPanel] = useState(false);
+  const [currentLevelName, setCurrentLevelName] = useState("Auto");
+  const [bandwidth, setBandwidth] = useState("");
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
 
-    const setupHls = () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
+    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
-      if (Hls.isSupported()) {
-        const hls = new Hls({
-          enableWorker:           true,
-          lowLatencyMode:         true,
-          liveSyncDuration:       3,
-          liveMaxLatencyDuration: 10,
-        });
-        hlsRef.current = hls;
-        hls.loadSource(src);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          video.play().catch(() => {});
-        });
-        hls.on(Hls.Events.ERROR, (_, data) => {
-          if (data.fatal) {
-            switch (data.type) {
-              case Hls.ErrorTypes.NETWORK_ERROR:
-                hls.startLoad();
-                break;
-              case Hls.ErrorTypes.MEDIA_ERROR:
-                hls.recoverMediaError();
-                break;
-              default:
-                hls.destroy();
-                break;
-            }
-          }
-        });
-      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = src;
-        video.addEventListener("loadedmetadata", () => {
-          video.play().catch(() => {});
-        });
-      }
-    };
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker:           true,
+        lowLatencyMode:         false,
+        maxBufferLength:        30,
+        maxMaxBufferLength:     60,
+        liveSyncDurationCount:  3,
+        liveMaxLatencyDurationCount: 10,
+        liveDurationInfinity:   true,
+        fragLoadingMaxRetry:    6,
+        fragLoadingRetryDelay:  1000,
+        ...(token && {
+          xhrSetup: (xhr) => {
+            xhr.setRequestHeader("x-api-token", token);
+          },
+          fetchSetup: (context, initParams) => {
+            initParams.headers = { ...initParams.headers, "x-api-token": token };
+            return new Request(context.url, initParams);
+          },
+        }),
+      });
+      hlsRef.current = hls;
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
+        const lvl = hls.levels[data.level];
+        if (lvl) {
+          setCurrentLevelName(lvl.name || `${lvl.height}p`);
+          const bw = hls.bandwidthEstimate;
+          if (bw > 0) setBandwidth(
+            bw >= 1_000_000
+              ? (bw / 1_000_000).toFixed(1) + " Mbps"
+              : Math.round(bw / 1_000) + " Kbps"
+          );
+        }
+      });
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        else hls.destroy();
+      });
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = src;
+      video.addEventListener("loadedmetadata", () => { video.play().catch(() => {}); });
+    }
 
-    setupHls();
-
-    return () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
-    };
-  }, [src]);
+    return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
+  }, [src, token]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <video
         ref={videoRef}
-        controls
-        autoPlay
-        playsInline
+        controls autoPlay playsInline
         style={{ width: "100%", height: "100%", background: "#000", borderRadius: "8px" }}
         title={title}
       />
       {streams && streams.length > 0 && (
         <div style={{ position: "absolute", bottom: "48px", right: "12px", zIndex: 10 }}>
-          <ResolutionSelector
-            streams={streams}
-            currentUrl={src}
-            onSelect={onResolutionChange}
-          />
+          <button
+            onClick={() => setShowQualityPanel(p => !p)}
+            style={{
+              display: "flex", alignItems: "center", gap: "6px",
+              padding: "6px 12px", borderRadius: "8px",
+              background: "rgba(0,0,0,0.8)", color: "#fff",
+              fontSize: "11px", fontWeight: 700, cursor: "pointer",
+              border: "1px solid rgba(255,255,255,0.1)",
+            }}
+          >
+            ⚙ Auto ({currentLevelName})
+            {bandwidth && <span style={{ opacity: 0.5, fontSize: "10px" }}>· {bandwidth}</span>}
+          </button>
+          {showQualityPanel && (
+            <div style={{
+              position: "absolute", bottom: "calc(100% + 8px)", right: 0,
+              background: "rgba(17,17,27,0.97)", border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "12px", padding: "8px", minWidth: "180px",
+            }}>
+              <p style={{ fontSize: "9px", fontWeight: 700, color: "rgba(255,255,255,0.3)", padding: "0 8px 8px", textTransform: "uppercase", letterSpacing: "1px", margin: 0 }}>Kualitas</p>
+              {streams.map((q, i) => (
+                <button
+                  key={i}
+                  onClick={() => { onResolutionChange(q); setShowQualityPanel(false); }}
+                  style={{
+                    width: "100%", padding: "8px 10px", borderRadius: "8px",
+                    border: "none", background: "transparent",
+                    color: "rgba(255,255,255,0.7)", fontSize: "12px",
+                    cursor: "pointer", textAlign: "left",
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                  }}
+                >
+                  <span>{q.name}</span>
+                  <span style={{ fontSize: "10px", opacity: 0.5 }}>{q.bandwidth_label}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -189,6 +310,11 @@ function LiveStream() {
   const chatEndRef  = useRef(null);
   const channelRef  = useRef(null);
 
+  const [streamToken,    setStreamToken]    = useState("");
+  const [qualityMode,    setQualityMode]    = useState("auto");
+  const [currentQuality, setCurrentQuality] = useState(null);
+  const [showQualityPanel, setShowQualityPanel] = useState(false);
+  
   const fetchClientIP = async () => {
     try {
       const res  = await fetch("https://api.ipify.org?format=json");
@@ -382,63 +508,20 @@ function LiveStream() {
   };
 
   // ── Fetch stream via /live/stream?showId= ────────────────────────────────
-  const fetchShowStream = async (showId) => {
-    try {
-      const res = await fetch(
-        `https://v2.jkt48connect.com/api/jkt48/live/stream?apikey=${API_KEY}&showId=${showId}`
-      );
-
-      let data = null;
-      try {
-        data = await res.json();
-      } catch {
-        console.warn("fetchShowStream: gagal parse JSON response");
-        return null;
-      }
-
-      console.log("fetchShowStream raw response:", data);
-
-      if (!data?.success) {
-        console.warn("fetchShowStream: API returned success=false", data);
-        return null;
-      }
-
-      const rawStreams = Array.isArray(data?.streams)
-        ? data.streams.filter((s) => s && typeof s.url === "string" && s.url.length > 0)
-        : [];
-
-      const sorted = rawStreams.sort(
-        (a, b) => parseInt(b.BANDWIDTH || 0) - parseInt(a.BANDWIDTH || 0)
-      );
-
-      if (sorted.length > 0) {
-        setAvailableStreams(sorted);
-      }
-
-      const defaultUrl =
-        (typeof data?.stream_url === "string" && data.stream_url.length > 0
-          ? data.stream_url
-          : null) ||
-        sorted[0]?.url ||
-        null;
-
-      if (!defaultUrl) {
-        console.warn("fetchShowStream: tidak ada URL stream ditemukan", data);
-        return null;
-      }
-
-      return {
-        url:     defaultUrl,
-        title:   data?.showId || showId,
-        showId:  data?.showId,
-        tokenId: data?.tokenId,
-      };
-    } catch (e) {
-      console.error("fetchShowStream error:", e);
-      return null;
-    }
-  };
-
+ const fetchShowStream = useCallback(async (showId) => {
+  try {
+    const token = await generateStreamToken(showId, false);
+    setStreamToken(token);
+    const { url, qualities } = await getStreamURL(token, showId, false);
+    if (qualities.length > 0) setAvailableStreams(qualities);
+    if (!url) { console.warn("fetchShowStream: tidak ada URL ditemukan"); return null; }
+    return { url, title: showId, showId, token };
+  } catch (e) {
+    console.error("fetchShowStream error:", e);
+    return null;
+  }
+}, []);
+  
   // ── Load stream data ──────────────────────────────────────────────────────
   const loadStreamData = useCallback(async () => {
     try {
@@ -537,10 +620,11 @@ function LiveStream() {
     }
   }, [playbackId, fetchIdnPlusLiveShowId, idnLiveShow]);
 
-  const handleResolutionChange = (stream) => {
-    if (!stream?.url) return;
-    setHlsUrl(stream.url);
-  };
+  const handleResolutionChange = (quality) => {
+  if (!quality?.manual_url) return;
+  setHlsUrl(quality.manual_url);
+  // token tetap sama, tidak perlu regenerate untuk manual quality
+};
 
   useEffect(() => {
     const init = async () => {
@@ -839,26 +923,29 @@ function LiveStream() {
 
       <div className="stream-layout">
         <div className="main-content">
-          <div className="player-container">
-            {isSlugMode && hlsUrl ? (
-              <HlsPlayer
-                src={hlsUrl}
-                title={idnLiveShow?.title || streamData.title}
-                streams={availableStreams}
-                onResolutionChange={handleResolutionChange}
-              />
-            ) : (
-              <MuxPlayer
-                streamType="live"
-                playbackId={streamData.playbackId}
-                metadata={{
-                  video_title:    streamData.title,
-                  viewer_user_id: streamData.viewerId,
-                }}
-                autoPlay
-              />
-            )}
-          </div>
+          {/* sebelumnya ada isSlugMode check & MuxPlayer — ganti jadi ini: */}
+<div className="player-container">
+  {hlsUrl ? (
+    <HlsPlayer
+      src={hlsUrl}
+      title={idnLiveShow?.title || streamData?.title || "Live Stream JKT48"}
+      streams={availableStreams}
+      onResolutionChange={handleResolutionChange}
+      token={streamToken}
+    />
+  ) : (
+    <div style={{
+      width: "100%", aspectRatio: "16/9",
+      background: "#0e0e1a", borderRadius: "8px",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      <div style={{ textAlign: "center", color: "#7878a8" }}>
+        <div className="spinner-large" style={{ margin: "0 auto 12px" }} />
+        <p style={{ fontSize: "13px" }}>Menghubungkan ke stream...</p>
+      </div>
+    </div>
+  )}
+</div>
 
           {/* Info tambahan dari IDN Plus */}
           {idnLiveShow && (
