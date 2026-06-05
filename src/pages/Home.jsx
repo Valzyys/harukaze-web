@@ -1127,7 +1127,6 @@ function Home() {
         <LiveShowsSection />
         <NewsSection /> 
         <RecentLiveSection />
-        <AppBannerSection />
       </div>
     </div>
   );
