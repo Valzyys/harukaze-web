@@ -583,107 +583,73 @@ function LiveStream() {
     }
   }, []);
 
-  // ── Load stream data ──────────────────────────────────────────────────────
   const loadStreamData = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError("");
+  try {
+    setLoading(true);
+    setError("");
 
-      if (!playbackId) {
-        setError("Playback ID tidak ditemukan");
-        setLoading(false);
-        return;
-      }
-
-      const slugMode = isSlugParam(playbackId);
-      setIsSlugMode(slugMode);
-
-      // Fetch show info — fire-and-forget, tidak blokir stream
-      fetchNearestShow().then((nearestShow) => {
-        if (nearestShow) {
-          setShowInfo({ title: nearestShow.title, showId: nearestShow.id });
-          fetchShowMembers(nearestShow.id);
-        }
-      }).catch(() => {});
-
-      if (slugMode) {
-        // ── Ambil showId dari IDN Plus API (status: live) ──────────────────
-        let resolvedShowId = null;
-
-        const idnShowId = await fetchIdnPlusLiveShowId();
-
-        if (idnShowId) {
-          console.log("Menggunakan showId dari IDN Plus API:", idnShowId);
-          resolvedShowId = idnShowId;
-        } else {
-          console.warn("Tidak ada IDN Plus show yang live, fallback ke showId hardcode");
-          resolvedShowId = "SH3401";
-        }
-
-        let result = await fetchShowStream(resolvedShowId);
-
-        // Retry sekali jika gagal
-        if (!result || !result.url) {
-          console.warn("fetchShowStream: retry setelah 2 detik...");
-          await new Promise((r) => setTimeout(r, 2000));
-          result = await fetchShowStream(resolvedShowId);
-        }
-
-        // Jika masih gagal dan tadi pakai IDN showId, coba fallback hardcode
-        if ((!result || !result.url) && idnShowId && resolvedShowId !== "SH3401") {
-          console.warn("fetchShowStream: IDN showId gagal, mencoba fallback hardcode SH3401...");
-          result = await fetchShowStream("SH3401");
-        }
-
-        if (!result || !result.url) {
-          setError("Gagal mendapatkan stream URL. Stream mungkin sudah berakhir.");
-          setLoading(false);
-          return;
-        }
-
-        setHlsUrl(result.url);
-        setStreamData({
-          playbackId,
-          title:    idnLiveShow?.title || result.title || "Live Stream JKT48",
-          viewerId: "viewer-" + Date.now(),
-        });
-
-        // Update show info dari IDN Plus jika ada
-        if (idnLiveShow) {
-          setShowInfo({
-            title:  idnLiveShow.title,
-            showId: resolvedShowId,
-          });
-        }
-
-        // Fetch members dari showId yang berhasil
-        if (result.showId) {
-          fetchShowMembers(result.showId);
-        } else {
-          fetchShowMembers(resolvedShowId);
-        }
-
-      } else {
-        // Non-slug mode — gunakan playbackId langsung sebagai showId ke GiStream
-        const result = await fetchShowStream(playbackId);
-        if (result && result.url) {
-          setHlsUrl(result.url);
-        }
-        setStreamData({
-          playbackId,
-          title:    "Live Stream JKT48",
-          viewerId: "viewer-" + Date.now(),
-        });
-      }
-
+    if (!playbackId) {
+      setError("Playback ID tidak ditemukan");
       setLoading(false);
-    } catch (e) {
-      console.error("loadStreamData error:", e);
-      setError("Terjadi kesalahan saat memuat stream. Silakan coba lagi.");
-      setLoading(false);
+      return;
     }
-  }, [playbackId, fetchIdnPlusLiveShowId, fetchShowStream, idnLiveShow]);
 
+    const slugMode = isSlugParam(playbackId);
+    setIsSlugMode(slugMode);
+
+    // Fire-and-forget show info
+    fetchNearestShow().then((nearestShow) => {
+      if (nearestShow) {
+        setShowInfo({ title: nearestShow.title, showId: nearestShow.id });
+        fetchShowMembers(nearestShow.id);
+      }
+    }).catch(() => {});
+
+    // Generate token pakai slug dari URL langsung
+    const isSlug = slugMode;
+    console.log(`loadStreamData: mode=${isSlug ? "slug" : "showId"}, value=${playbackId}`);
+
+    const token = await generateStreamToken(playbackId, isSlug);
+    setStreamToken(token);
+
+    console.log("loadStreamData: token generated:", token.slice(0, 30) + "...");
+
+    const { url, qualities } = await getStreamURL(token, playbackId, isSlug);
+
+    console.log("loadStreamData: streamUrl =", url);
+    console.log("loadStreamData: qualities =", qualities.length);
+
+    if (qualities.length > 0) setAvailableStreams(qualities);
+    if (!url) throw new Error("Stream URL kosong setelah fetch berhasil");
+
+    setHlsUrl(url);
+    setStreamData({
+      playbackId,
+      title: "Live Stream JKT48",
+      viewerId: "viewer-" + Date.now(),
+    });
+
+    // Fetch IDN Plus info untuk display (opsional)
+    fetch(`https://v5.jkt48connect.com/api/jkt48/idnplus?apikey=${API_KEY}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data?.data && Array.isArray(data.data)) {
+          const show = data.data.find(s =>
+            s.slug === playbackId || s.status === "live"
+          );
+          if (show) setIdnLiveShow(show);
+        }
+      })
+      .catch(() => {});
+
+    setLoading(false);
+  } catch (e) {
+    console.error("loadStreamData error:", e);
+    setError(e?.message || "Terjadi kesalahan saat memuat stream.");
+    setLoading(false);
+  }
+}, [playbackId]);
+  
   const handleResolutionChange = (quality) => {
     if (!quality?.manual_url) return;
     setHlsUrl(quality.manual_url);
@@ -881,21 +847,20 @@ function LiveStream() {
     );
   }
 
-  if (loading || fetchingIdnShow) {
-    return (
-      <div className="loading-container">
-        <div className="loading-content">
-          <div className="spinner-large"></div>
-          <h2>Memuat live stream...</h2>
-          <p>
-            {fetchingIdnShow
-              ? "Mencari show yang sedang live..."
-              : "Mengambil informasi show..."}
-          </p>
-        </div>
+  // Hapus ini dari render:
+// if (loading || fetchingIdnShow) {
+// Ganti jadi:
+if (loading) {
+  return (
+    <div className="loading-container">
+      <div className="loading-content">
+        <div className="spinner-large"></div>
+        <h2>Memuat live stream...</h2>
+        <p>Mengambil informasi show...</p>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
 if (error && !streamData) {
   return (
