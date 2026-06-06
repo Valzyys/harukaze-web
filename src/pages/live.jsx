@@ -88,23 +88,31 @@ async function getStreamURL(token, slugOrId, isSlug) {
   const streams = data.streams || [];
   const sorted = streams
     .filter(s => s && typeof s.url === "string" && s.url.length > 0)
-    .sort((a, b) => parseInt(b.BANDWIDTH || 0) - parseInt(a.BANDWIDTH || 0));
+    .sort((a, b) => {
+      // BANDWIDTH bisa "3422999,RESOLUTION" — ambil angka pertama saja
+      const bwA = parseInt((a.BANDWIDTH || "0").split(",")[0]);
+      const bwB = parseInt((b.BANDWIDTH || "0").split(",")[0]);
+      return bwB - bwA;
+    });
 
-  const autoUrl = sorted[0]?.url || "";
+  // Gunakan stream_url dari root sebagai auto URL (biasanya highest quality)
+  const autoUrl = data.stream_url || sorted[0]?.url || "";
 
   const qualities = sorted.map((s, idx) => ({
     index:           idx,
-    name:            s.NAME || `${s.RESOLUTION?.split("x")[1] || "?"}p`,
+    name:            s.NAME || `q${idx}`,
     quality:         s.NAME || `q${idx}`,
-    bandwidth:       parseInt(s.BANDWIDTH) || 0,
-    bandwidth_label: s.BANDWIDTH
-      ? parseInt(s.BANDWIDTH) >= 1_000_000
-        ? (parseInt(s.BANDWIDTH) / 1_000_000).toFixed(1) + " Mbps"
-        : Math.round(parseInt(s.BANDWIDTH) / 1_000) + " Kbps"
-      : "",
+    bandwidth:       parseInt((s.BANDWIDTH || "0").split(",")[0]),
+    bandwidth_label: (() => {
+      const bw = parseInt((s.BANDWIDTH || "0").split(",")[0]);
+      if (!bw) return "";
+      return bw >= 1_000_000
+        ? (bw / 1_000_000).toFixed(1) + " Mbps"
+        : Math.round(bw / 1_000) + " Kbps";
+    })(),
     resolution:  s.RESOLUTION || "",
     fps:         s["FRAME-RATE"] || "",
-    manual_url:  s.url || "",
+    manual_url:  s.url || "",   // <-- pakai field `url` langsung (v4.gstreamlive.com)
   }));
 
   return { url: autoUrl, qualities };
