@@ -407,7 +407,7 @@ function LiveStream() {
     setFetchingIdnShow(true);
     try {
       const res  = await fetch(
-        `https://v2.jkt48connect.com/api/jkt48/idnplus?apikey=${API_KEY}`
+        `https://v5.jkt48connect.com/api/jkt48/idnplus?apikey=${API_KEY}`
       );
       const data = await res.json();
 
