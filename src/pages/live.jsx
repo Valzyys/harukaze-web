@@ -75,11 +75,7 @@ async function generateStreamToken(slugOrId, isSlug) {
   return data.data.token;
 }
 
-async function getStreamURL(
-  token: string,
-  slugOrId: string,
-  isSlug: boolean
-): Promise<{ url: string; qualities: QualityOption[] }> {
+async function getStreamURL(token, slugOrId, isSlug) {
   const param = isSlug ? `slug=${slugOrId}` : `showId=${slugOrId}`;
   const res = await fetch(`${CTV_BASE}/stream?${param}`, {
     headers: {
@@ -89,7 +85,7 @@ async function getStreamURL(
   });
 
   const text = await res.text();
-  let data: any;
+  let data;
   try {
     data = JSON.parse(text);
   } catch {
@@ -102,12 +98,11 @@ async function getStreamURL(
     );
   }
 
-  const streams: any[] = data.streams || [];
+  const streams = data.streams || [];
 
   const sorted = streams
     .filter((s) => s && typeof s.url === "string" && s.url.length > 0)
     .sort((a, b) => {
-      // BANDWIDTH bisa "3422999,RESOLUTION" — split dulu
       const bwA = parseInt((a.BANDWIDTH || "0").split(",")[0]);
       const bwB = parseInt((b.BANDWIDTH || "0").split(",")[0]);
       return bwB - bwA;
@@ -119,10 +114,9 @@ async function getStreamURL(
     );
   }
 
-  // Gunakan stream_url dari root response sebagai auto URL
   const autoUrl = data.stream_url || sorted[0]?.url || "";
 
-  const qualities: QualityOption[] = sorted.map((s: any, idx: number) => {
+  const qualities = sorted.map((s, idx) => {
     const bw = parseInt((s.BANDWIDTH || "0").split(",")[0]);
     return {
       index:           idx,
@@ -136,13 +130,14 @@ async function getStreamURL(
         : "",
       resolution:   s.RESOLUTION || "",
       fps:          s["FRAME-RATE"] || "",
-      manual_url:   s.url || "",   // ← v4 URL, butuh x-api-token
+      manual_url:   s.url || "",
       playlist_url: s.url || "",
     };
   });
 
   return { url: autoUrl, qualities };
 }
+
 const isSlugParam = (param) => {
   if (!param) return false;
   if (/\d{4}-\d{2}-\d{2}/.test(param)) return true;
@@ -902,35 +897,39 @@ function LiveStream() {
     );
   }
 
-if (error) {
+if (error && !streamData) {
   return (
-    <div className="min-h-screen rounded-2xl border border-gray-200 bg-white px-5 py-7 dark:border-gray-800 dark:bg-white/[0.03] xl:px-10 xl:py-12 flex items-center justify-center">
-      <div className="text-center max-w-sm">
-        <div className="w-14 h-14 rounded-2xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 flex items-center justify-center mx-auto mb-4">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="text-red-500"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
-        </div>
-        <h3 className="text-lg font-bold text-gray-800 dark:text-white/90 mb-2">Terjadi Kesalahan</h3>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">{error}</p>
-
-        {/* ← TAMBAH INI untuk detail error */}
-        <details className="mb-5 text-left">
-          <summary className="text-xs text-red-400 font-semibold cursor-pointer hover:text-red-500 transition-colors">
+    <div className="error-container">
+      <div className="error-content">
+        <div className="error-icon"></div>
+        <h2>Terjadi Kesalahan</h2>
+        <p>{error}</p>
+        <details style={{ marginTop: "12px", textAlign: "left", maxWidth: "500px", width: "100%" }}>
+          <summary style={{ cursor: "pointer", color: "#DC1F2E", fontSize: "12px", fontWeight: 700 }}>
             ▼ Detail Error
           </summary>
-          <pre className="mt-2 text-[11px] text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-xl p-3 whitespace-pre-wrap break-all leading-relaxed">
+          <pre style={{
+            fontSize: "11px", color: "rgba(255,255,255,0.5)",
+            background: "rgba(255,255,255,0.05)", padding: "10px",
+            borderRadius: "8px", marginTop: "8px",
+            whiteSpace: "pre-wrap", wordBreak: "break-all",
+          }}>
             {error}
           </pre>
         </details>
-
-        <div className="flex gap-3 justify-center">
-          <button onClick={() => { setError(""); isIdn ? loadIdnStream() : loadMemberStream(); }} className="px-5 py-2.5 rounded-xl border-0 bg-red-500 text-white text-sm font-bold cursor-pointer hover:bg-red-600 shadow-lg shadow-red-500/25 transition-all hover:-translate-y-0.5">Coba Lagi</button>
-          <button onClick={() => navigate(-1)} className="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-transparent text-gray-600 dark:text-gray-400 text-sm font-semibold cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">Kembali</button>
-        </div>
+        <button
+          onClick={() => { setError(""); loadStreamData(); }}
+          className="back-button"
+          style={{ marginBottom: "10px", marginTop: "16px" }}
+        >
+          ↺ Coba Lagi
+        </button>
+        <button onClick={goBack} className="back-button">← Kembali</button>
       </div>
     </div>
   );
 }
-
+  
   if (!streamData) {
     return (
       <div className="loading-container">
