@@ -21,7 +21,8 @@ const harukazeFetch = async (path, opts = {}) => {
 };
 
 // ── GiStream token constants ──────────────────────────────────────────────────
-const TOKEN_API_BASE = "https://v5.jkt48connect.com";
+// ── GiStream token constants ──────────────────────────────────────────────────
+const TOKEN_API_BASE = "https://v5.jkt48connect.com";  // ← v5, bukan v2
 const CTV_BASE       = "https://ctv.jkt48connect.com";
 const SIGNING_PATH   = "/api/token/generate?apikey=JKTCONNECT";
 const PARTNER_KID    = "jkt48connect-v1";
@@ -82,20 +83,29 @@ async function getStreamURL(token, slugOrId, isSlug) {
       ...(isSlug ? { "x-slug": slugOrId } : { "x-showid": slugOrId }),
     },
   });
-  const data = await res.json();
-  if (!data.success) throw new Error(data.message || "Gagal mendapatkan stream URL");
+
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); }
+  catch { throw new Error(`ctv non-JSON (${res.status}): ${text.slice(0, 300)}`); }
+
+  if (!data.success) throw new Error(`ctv gagal (${res.status}): ${data.message || JSON.stringify(data).slice(0, 200)}`);
 
   const streams = data.streams || [];
   const sorted = streams
     .filter(s => s && typeof s.url === "string" && s.url.length > 0)
     .sort((a, b) => {
-      // BANDWIDTH bisa "3422999,RESOLUTION" — ambil angka pertama saja
+      // BANDWIDTH bisa "3422999,RESOLUTION" — ambil angka pertama
       const bwA = parseInt((a.BANDWIDTH || "0").split(",")[0]);
       const bwB = parseInt((b.BANDWIDTH || "0").split(",")[0]);
       return bwB - bwA;
     });
 
-  // Gunakan stream_url dari root sebagai auto URL (biasanya highest quality)
+  if (sorted.length === 0) {
+    throw new Error(`Streams kosong. Raw response: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+
+  // Gunakan stream_url dari root (highest quality) sebagai auto URL
   const autoUrl = data.stream_url || sorted[0]?.url || "";
 
   const qualities = sorted.map((s, idx) => ({
@@ -110,9 +120,9 @@ async function getStreamURL(token, slugOrId, isSlug) {
         ? (bw / 1_000_000).toFixed(1) + " Mbps"
         : Math.round(bw / 1_000) + " Kbps";
     })(),
-    resolution:  s.RESOLUTION || "",
-    fps:         s["FRAME-RATE"] || "",
-    manual_url:  s.url || "",   // <-- pakai field `url` langsung (v4.gstreamlive.com)
+    resolution: s.RESOLUTION || "",
+    fps:        s["FRAME-RATE"] || "",
+    manual_url: s.url || "",  // ← v4 URL, butuh x-api-token di header
   }));
 
   return { url: autoUrl, qualities };
@@ -877,25 +887,35 @@ function LiveStream() {
     );
   }
 
-  if (error && !streamData) {
-    return (
-      <div className="error-container">
-        <div className="error-content">
-          <div className="error-icon"></div>
-          <h2>Terjadi Kesalahan</h2>
-          <p>{error}</p>
-          <button
-            onClick={() => { setError(""); loadStreamData(); }}
-            className="back-button"
-            style={{ marginBottom: "10px" }}
-          >
-            ↺ Coba Lagi
-          </button>
-          <button onClick={goBack} className="back-button">← Kembali</button>
-        </div>
+ if (error && !streamData) {
+  return (
+    <div className="error-container">
+      <div className="error-content">
+        <div className="error-icon"></div>
+        <h2>Terjadi Kesalahan</h2>
+        <p>{error}</p>
+        {/* Tambah detail error untuk debug */}
+        <details style={{ marginTop: "12px", textAlign: "left", maxWidth: "500px" }}>
+          <summary style={{ cursor: "pointer", color: "#DC1F2E", fontSize: "12px" }}>
+            Detail Error
+          </summary>
+          <pre style={{
+            fontSize: "11px", color: "rgba(255,255,255,0.5)",
+            background: "rgba(255,255,255,0.05)", padding: "10px",
+            borderRadius: "8px", marginTop: "8px",
+            whiteSpace: "pre-wrap", wordBreak: "break-all"
+          }}>
+            {error}
+          </pre>
+        </details>
+        <button onClick={() => { setError(""); loadStreamData(); }} className="back-button" style={{ marginBottom: "10px" }}>
+          ↺ Coba Lagi
+        </button>
+        <button onClick={goBack} className="back-button">← Kembali</button>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   if (!streamData) {
     return (
