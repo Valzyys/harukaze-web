@@ -527,7 +527,7 @@ function LiveStream() {
 
   const fetchNearestShow = async () => {
     try {
-      const res  = await fetch("https://v2.jkt48connect.com/api/jkt48/theater?apikey=JKTCONNECT");
+      const res  = await fetch("https://v5.jkt48connect.com/api/jkt48/theater?apikey=JKTCONNECT");
       const data = await res.json();
       if (data.theater?.length > 0) {
         const now = new Date();
@@ -545,7 +545,7 @@ function LiveStream() {
   const fetchShowMembers = async (showId) => {
     try {
       setLoadingMembers(true);
-      const res  = await fetch(`https://v2.jkt48connect.com/api/jkt48/theater/${showId}?apikey=JKTCONNECT`);
+      const res  = await fetch(`https://v5.jkt48connect.com/api/jkt48/theater/${showId}?apikey=JKTCONNECT`);
       const data = await res.json();
       if (data.shows?.[0]?.members) setMembers(data.shows[0].members);
     } catch {}
