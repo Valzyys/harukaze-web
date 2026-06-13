@@ -961,3 +961,5 @@ function LiveStream() {
     </div>
   );
 }
+
+export default LiveStream;
