@@ -1,4 +1,3 @@
-
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import Hls from "hls.js";
@@ -23,7 +22,7 @@ const harukazeFetch = async (path, opts = {}) => {
 
 // ── GiStream token constants ──────────────────────────────────────────────────
 const TOKEN_API_BASE = "https://v5.jkt48connect.com";
-const STREAM_BASE    = "https://v1.jkt48connect.app";   // ← ganti dari ctv ke v1
+const STREAM_BASE    = "https://v1.jkt48connect.app";
 const SIGNING_PATH   = "/api/token/generate?apikey=JKTCONNECT";
 const PARTNER_KID    = "jkt48connect-v1";
 const PARTNER_SECRET = "gstream@jkt48connect@2108";
@@ -138,11 +137,15 @@ async function getStreamURL(token, slugOrId, isSlug) {
   return { url: autoUrl, qualities };
 }
 
+// ── FIX: default to slug unless param is clearly a numeric showId ─────────────
 const isSlugParam = (param) => {
   if (!param) return false;
-  if (/\d{4}-\d{2}-\d{2}/.test(param)) return true;
-  if (/^SH\d+$/i.test(param)) return true;
-  return false;
+  // Pure numeric = showId (e.g. "123456")
+  if (/^\d+$/.test(param)) return false;
+  // SH-prefixed numeric = showId (e.g. "SH123456")
+  if (/^SH\d+$/i.test(param)) return false;
+  // Everything else is a slug (date-based, name-based, etc.)
+  return true;
 };
 
 // ── HLS Player ─────────────────────────────────────────────────────────────────
