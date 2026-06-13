@@ -74,6 +74,54 @@ async function generateStreamToken(slugOrId, isSlug) {
   return data.data.token;
 }
 
+// ── M3U8 master playlist parser ───────────────────────────────────────────────
+function parseM3U8(text) {
+  const lines   = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const streams = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith("#EXT-X-STREAM-INF:")) continue;
+
+    const infLine = lines[i].substring("#EXT-X-STREAM-INF:".length);
+    const url     = lines[i + 1] && !lines[i + 1].startsWith("#") ? lines[i + 1] : null;
+    if (!url) continue;
+
+    // Parse key=value pairs — handles quoted values too
+    const attrs = {};
+    const re    = /([A-Z0-9\-]+)=("([^"]*?)"|([^,]+))/g;
+    let m;
+    while ((m = re.exec(infLine)) !== null) {
+      attrs[m[1]] = m[3] !== undefined ? m[3] : m[4];
+    }
+
+    const bw  = parseInt(attrs["BANDWIDTH"] || "0", 10);
+    const res = attrs["RESOLUTION"] || "";
+    const fps = attrs["FRAME-RATE"] || "";
+
+    // Derive a friendly name from resolution (e.g. "1920x1080" → "1080p")
+    const height     = res ? res.split("x")[1] : null;
+    const name       = height ? `${height}p` : `Stream ${streams.length + 1}`;
+
+    streams.push({
+      name,
+      quality:         name,
+      bandwidth:       bw,
+      bandwidth_label: bw >= 1_000_000
+        ? (bw / 1_000_000).toFixed(1) + " Mbps"
+        : bw > 0 ? Math.round(bw / 1_000) + " Kbps" : "",
+      resolution:   res,
+      fps,
+      url,
+      manual_url:   url,
+      playlist_url: url,
+    });
+  }
+
+  // Sort highest bandwidth first
+  streams.sort((a, b) => b.bandwidth - a.bandwidth);
+  return streams;
+}
+
 async function getStreamURL(token, slugOrId, isSlug) {
   const param = isSlug ? `slug=${slugOrId}` : `showId=${slugOrId}`;
   const res = await fetch(`${STREAM_BASE}/stream?${param}`, {
@@ -84,22 +132,33 @@ async function getStreamURL(token, slugOrId, isSlug) {
   });
 
   const text = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`stream HTTP ${res.status}: ${text.slice(0, 300)}`);
+  }
+
+  // ── Raw M3U8 response ──────────────────────────────────────────────────────
+  if (text.trimStart().startsWith("#EXTM3U")) {
+    const qualities = parseM3U8(text);
+    if (qualities.length === 0) {
+      throw new Error(`M3U8 parsed tapi tidak ada stream. Response:\n${text.slice(0, 400)}`);
+    }
+    return { url: qualities[0].url, qualities };
+  }
+
+  // ── JSON response (fallback, format lama) ─────────────────────────────────
   let data;
   try {
     data = JSON.parse(text);
   } catch {
-    throw new Error(`stream non-JSON (HTTP ${res.status}): ${text.slice(0, 300)}`);
+    throw new Error(`Response bukan M3U8 maupun JSON (HTTP ${res.status}): ${text.slice(0, 300)}`);
   }
 
   if (!data.success) {
-    throw new Error(
-      `stream gagal: ${data.message || JSON.stringify(data).slice(0, 300)}`
-    );
+    throw new Error(`stream gagal: ${data.message || JSON.stringify(data).slice(0, 300)}`);
   }
 
-  const streams = data.streams || [];
-
-  const sorted = streams
+  const streams = (data.streams || [])
     .filter((s) => s && typeof s.url === "string" && s.url.length > 0)
     .sort((a, b) => {
       const bwA = parseInt((a.BANDWIDTH || "0").split(",")[0]);
@@ -107,27 +166,24 @@ async function getStreamURL(token, slugOrId, isSlug) {
       return bwB - bwA;
     });
 
-  if (sorted.length === 0) {
-    throw new Error(
-      `Streams kosong. streams.length=${streams.length}. Response: ${JSON.stringify(data).slice(0, 400)}`
-    );
+  if (streams.length === 0) {
+    throw new Error(`Streams kosong. Response: ${JSON.stringify(data).slice(0, 400)}`);
   }
 
-  const autoUrl = data.stream_url || sorted[0]?.url || "";
-
-  const qualities = sorted.map((s, idx) => {
-    const bw = parseInt((s.BANDWIDTH || "0").split(",")[0]);
+  const autoUrl   = data.stream_url || streams[0]?.url || "";
+  const qualities = streams.map((s, idx) => {
+    const bw  = parseInt((s.BANDWIDTH || "0").split(",")[0]);
+    const res = s.RESOLUTION || "";
+    const h   = res ? res.split("x")[1] : null;
     return {
       index:           idx,
-      name:            s.NAME || `q${idx}`,
+      name:            h ? `${h}p` : (s.NAME || `q${idx}`),
       quality:         s.NAME || `q${idx}`,
       bandwidth:       bw,
-      bandwidth_label: bw
-        ? bw >= 1_000_000
-          ? (bw / 1_000_000).toFixed(1) + " Mbps"
-          : Math.round(bw / 1_000) + " Kbps"
-        : "",
-      resolution:   s.RESOLUTION || "",
+      bandwidth_label: bw >= 1_000_000
+        ? (bw / 1_000_000).toFixed(1) + " Mbps"
+        : bw > 0 ? Math.round(bw / 1_000) + " Kbps" : "",
+      resolution:   res,
       fps:          s["FRAME-RATE"] || "",
       manual_url:   s.url || "",
       playlist_url: s.url || "",
