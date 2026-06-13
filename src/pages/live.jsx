@@ -1,3 +1,4 @@
+
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import Hls from "hls.js";
@@ -21,9 +22,8 @@ const harukazeFetch = async (path, opts = {}) => {
 };
 
 // ── GiStream token constants ──────────────────────────────────────────────────
-// ── GiStream token constants ──────────────────────────────────────────────────
-const TOKEN_API_BASE = "https://v5.jkt48connect.com";  // ← v5, bukan v2
-const CTV_BASE       = "https://ctv.jkt48connect.com";
+const TOKEN_API_BASE = "https://v5.jkt48connect.com";
+const STREAM_BASE    = "https://v1.jkt48connect.app";   // ← ganti dari ctv ke v1
 const SIGNING_PATH   = "/api/token/generate?apikey=JKTCONNECT";
 const PARTNER_KID    = "jkt48connect-v1";
 const PARTNER_SECRET = "gstream@jkt48connect@2108";
@@ -77,7 +77,7 @@ async function generateStreamToken(slugOrId, isSlug) {
 
 async function getStreamURL(token, slugOrId, isSlug) {
   const param = isSlug ? `slug=${slugOrId}` : `showId=${slugOrId}`;
-  const res = await fetch(`${CTV_BASE}/stream?${param}`, {
+  const res = await fetch(`${STREAM_BASE}/stream?${param}`, {
     headers: {
       "x-api-token": token,
       ...(isSlug ? { "x-slug": slugOrId } : { "x-showid": slugOrId }),
@@ -89,12 +89,12 @@ async function getStreamURL(token, slugOrId, isSlug) {
   try {
     data = JSON.parse(text);
   } catch {
-    throw new Error(`ctv non-JSON (HTTP ${res.status}): ${text.slice(0, 300)}`);
+    throw new Error(`stream non-JSON (HTTP ${res.status}): ${text.slice(0, 300)}`);
   }
 
   if (!data.success) {
     throw new Error(
-      `ctv gagal: ${data.message || JSON.stringify(data).slice(0, 300)}`
+      `stream gagal: ${data.message || JSON.stringify(data).slice(0, 300)}`
     );
   }
 
@@ -354,7 +354,6 @@ function LiveStream() {
   const [availableStreams, setAvailableStreams] = useState([]);
   const [streamToken,     setStreamToken]      = useState("");
 
-  // ── State untuk IDN Plus live show ────────────────────────────────────────
   const [idnLiveShow,     setIdnLiveShow]     = useState(null);
   const [fetchingIdnShow, setFetchingIdnShow] = useState(false);
 
@@ -402,87 +401,48 @@ function LiveStream() {
     return false;
   }, []);
 
-  // ── Fetch live showId dari IDN Plus API ───────────────────────────────────
   const fetchIdnPlusLiveShowId = useCallback(async () => {
     setFetchingIdnShow(true);
     try {
-      const res  = await fetch(
-        `https://v5.jkt48connect.com/api/jkt48/idnplus?apikey=${API_KEY}`
-      );
+      const res  = await fetch(`https://v5.jkt48connect.com/api/jkt48/idnplus?apikey=${API_KEY}`);
       const data = await res.json();
-
-      console.log("IDN Plus API response:", data);
-
       if (!data || data.status !== 200 || !Array.isArray(data.data)) {
-        console.warn("fetchIdnPlusLiveShowId: response tidak valid", data);
-        setFetchingIdnShow(false);
-        return null;
+        setFetchingIdnShow(false); return null;
       }
-
       const liveShow = data.data.find((show) => show.status === "live");
-
-      if (!liveShow) {
-        console.warn("fetchIdnPlusLiveShowId: tidak ada show yang sedang live");
-        setFetchingIdnShow(false);
-        return null;
-      }
-
-      console.log("IDN Plus live show ditemukan:", liveShow);
-
+      if (!liveShow) { setFetchingIdnShow(false); return null; }
       setIdnLiveShow(liveShow);
       setFetchingIdnShow(false);
-
       return liveShow.showId || null;
     } catch (e) {
       console.error("fetchIdnPlusLiveShowId error:", e);
-      setFetchingIdnShow(false);
-      return null;
+      setFetchingIdnShow(false); return null;
     }
   }, []);
 
-  // ── Verifikasi via Harukaze ───────────────────────────────────────────────
   const verifyAccess = async () => {
-    if (!verificationData.email) {
-      setVerificationError("Email wajib diisi");
-      return;
-    }
-    setVerifying(true);
-    setVerificationError("");
+    if (!verificationData.email) { setVerificationError("Email wajib diisi"); return; }
+    setVerifying(true); setVerificationError("");
     try {
       const verifyRes = await harukazeFetch("/verify", {
-        method: "POST",
-        body: JSON.stringify({ email: verificationData.email }),
+        method: "POST", body: JSON.stringify({ email: verificationData.email }),
       });
-
       if (!verifyRes.status || !verifyRes.has_access) {
         setVerificationError(verifyRes.message || "Email tidak memiliki akses valid");
-        setVerifying(false);
-        return;
+        setVerifying(false); return;
       }
-
       const useRes = await harukazeFetch("/use", {
-        method: "POST",
-        body: JSON.stringify({ email: verificationData.email }),
+        method: "POST", body: JSON.stringify({ email: verificationData.email }),
       });
-
       if (!useRes.status) {
         setVerificationError(useRes.message || "Gagal menggunakan akses");
-        setVerifying(false);
-        return;
+        setVerifying(false); return;
       }
-
-      localStorage.setItem(
-        "stream_verification",
-        JSON.stringify({
-          email:     verificationData.email,
-          accessId:  useRes.data?.id,
-          timestamp: Date.now(),
-          verified:  true,
-        })
-      );
-      setIsVerified(true);
-      setShowVerification(false);
-      setVerifying(false);
+      localStorage.setItem("stream_verification", JSON.stringify({
+        email: verificationData.email, accessId: useRes.data?.id,
+        timestamp: Date.now(), verified: true,
+      }));
+      setIsVerified(true); setShowVerification(false); setVerifying(false);
     } catch {
       setVerificationError("Terjadi kesalahan saat verifikasi. Silakan coba lagi.");
       setVerifying(false);
@@ -495,33 +455,23 @@ function LiveStream() {
     try {
       const info = JSON.parse(stored);
       if (!info.verified || !info.timestamp || !info.email) {
-        localStorage.removeItem("stream_verification");
-        setShowVerification(true);
-        return false;
+        localStorage.removeItem("stream_verification"); setShowVerification(true); return false;
       }
       const hoursDiff = (Date.now() - info.timestamp) / (1000 * 60 * 60);
       if (hoursDiff > 5) {
-        localStorage.removeItem("stream_verification");
-        setShowVerification(true);
-        return false;
+        localStorage.removeItem("stream_verification"); setShowVerification(true); return false;
       }
       const verifyRes = await harukazeFetch("/verify", {
-        method: "POST",
-        body: JSON.stringify({ email: info.email }),
+        method: "POST", body: JSON.stringify({ email: info.email }),
       });
       if (!verifyRes.status || !verifyRes.has_access) {
-        localStorage.removeItem("stream_verification");
-        setShowVerification(true);
-        return false;
+        localStorage.removeItem("stream_verification"); setShowVerification(true); return false;
       }
-      setIsVerified(true);
-      setShowVerification(false);
+      setIsVerified(true); setShowVerification(false);
       setVerificationData({ email: info.email, code: "" });
       return true;
     } catch {
-      localStorage.removeItem("stream_verification");
-      setShowVerification(true);
-      return false;
+      localStorage.removeItem("stream_verification"); setShowVerification(true); return false;
     }
   };
 
@@ -552,104 +502,63 @@ function LiveStream() {
     setLoadingMembers(false);
   };
 
-  // ── Fetch stream via GiStream token ───────────────────────────────────────
   const fetchShowStream = useCallback(async (showId) => {
     try {
-      console.log("fetchShowStream: generating GiStream token for showId:", showId);
-
       const token = await generateStreamToken(showId, false);
       setStreamToken(token);
-
-      console.log("fetchShowStream: token generated, fetching stream URL...");
-
       const { url, qualities } = await getStreamURL(token, showId, false);
-
-      if (qualities.length > 0) {
-        setAvailableStreams(qualities);
-        console.log("fetchShowStream: qualities available:", qualities.length);
-      }
-
-      if (!url) {
-        console.warn("fetchShowStream: tidak ada URL stream ditemukan");
-        return null;
-      }
-
-      console.log("fetchShowStream: stream URL obtained successfully");
-
+      if (qualities.length > 0) setAvailableStreams(qualities);
+      if (!url) return null;
       return { url, title: showId, showId, token };
     } catch (e) {
-      console.error("fetchShowStream error:", e);
-      return null;
+      console.error("fetchShowStream error:", e); return null;
     }
   }, []);
 
   const loadStreamData = useCallback(async () => {
-  try {
-    setLoading(true);
-    setError("");
+    try {
+      setLoading(true); setError("");
+      if (!playbackId) { setError("Playback ID tidak ditemukan"); setLoading(false); return; }
 
-    if (!playbackId) {
-      setError("Playback ID tidak ditemukan");
-      setLoading(false);
-      return;
-    }
+      const slugMode = isSlugParam(playbackId);
+      setIsSlugMode(slugMode);
 
-    const slugMode = isSlugParam(playbackId);
-    setIsSlugMode(slugMode);
-
-    // Fire-and-forget show info
-    fetchNearestShow().then((nearestShow) => {
-      if (nearestShow) {
-        setShowInfo({ title: nearestShow.title, showId: nearestShow.id });
-        fetchShowMembers(nearestShow.id);
-      }
-    }).catch(() => {});
-
-    // Generate token pakai slug dari URL langsung
-    const isSlug = slugMode;
-    console.log(`loadStreamData: mode=${isSlug ? "slug" : "showId"}, value=${playbackId}`);
-
-    const token = await generateStreamToken(playbackId, isSlug);
-    setStreamToken(token);
-
-    console.log("loadStreamData: token generated:", token.slice(0, 30) + "...");
-
-    const { url, qualities } = await getStreamURL(token, playbackId, isSlug);
-
-    console.log("loadStreamData: streamUrl =", url);
-    console.log("loadStreamData: qualities =", qualities.length);
-
-    if (qualities.length > 0) setAvailableStreams(qualities);
-    if (!url) throw new Error("Stream URL kosong setelah fetch berhasil");
-
-    setHlsUrl(url);
-    setStreamData({
-      playbackId,
-      title: "Live Stream JKT48",
-      viewerId: "viewer-" + Date.now(),
-    });
-
-    // Fetch IDN Plus info untuk display (opsional)
-    fetch(`https://v5.jkt48connect.com/api/jkt48/idnplus?apikey=${API_KEY}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data?.data && Array.isArray(data.data)) {
-          const show = data.data.find(s =>
-            s.slug === playbackId || s.status === "live"
-          );
-          if (show) setIdnLiveShow(show);
+      fetchNearestShow().then((nearestShow) => {
+        if (nearestShow) {
+          setShowInfo({ title: nearestShow.title, showId: nearestShow.id });
+          fetchShowMembers(nearestShow.id);
         }
-      })
-      .catch(() => {});
+      }).catch(() => {});
 
-    setLoading(false);
-  } catch (e) {
-    console.error("loadStreamData error:", e);
-    setError(e?.message || "Terjadi kesalahan saat memuat stream.");
-    setLoading(false);
-  }
-}, [playbackId]);
-  
+      const isSlug = slugMode;
+      const token = await generateStreamToken(playbackId, isSlug);
+      setStreamToken(token);
+
+      const { url, qualities } = await getStreamURL(token, playbackId, isSlug);
+
+      if (qualities.length > 0) setAvailableStreams(qualities);
+      if (!url) throw new Error("Stream URL kosong setelah fetch berhasil");
+
+      setHlsUrl(url);
+      setStreamData({ playbackId, title: "Live Stream JKT48", viewerId: "viewer-" + Date.now() });
+
+      fetch(`https://v5.jkt48connect.com/api/jkt48/idnplus?apikey=${API_KEY}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data?.data && Array.isArray(data.data)) {
+            const show = data.data.find(s => s.slug === playbackId || s.status === "live");
+            if (show) setIdnLiveShow(show);
+          }
+        }).catch(() => {});
+
+      setLoading(false);
+    } catch (e) {
+      console.error("loadStreamData error:", e);
+      setError(e?.message || "Terjadi kesalahan saat memuat stream.");
+      setLoading(false);
+    }
+  }, [playbackId]);
+
   const handleResolutionChange = (quality) => {
     if (!quality?.manual_url) return;
     setHlsUrl(quality.manual_url);
@@ -664,11 +573,7 @@ function LiveStream() {
         await loadStreamData();
       } else {
         const verified = await checkExistingVerification();
-        if (verified) {
-          await loadStreamData();
-        } else {
-          setLoading(false);
-        }
+        if (verified) { await loadStreamData(); } else { setLoading(false); }
       }
     };
     init();
@@ -689,9 +594,7 @@ function LiveStream() {
               const profileData = await res.json();
               userData = profileData.status && profileData.data ? profileData.data : parsed.user;
             } catch { userData = parsed.user; }
-          } else {
-            userData = parsed?.user || parsed;
-          }
+          } else { userData = parsed?.user || parsed; }
         }
       } catch (e) { console.error("Error parsing user session", e); }
 
@@ -755,14 +658,9 @@ function LiveStream() {
   const goBack                   = () => navigate(-1);
   const handleLogout             = () => {
     localStorage.removeItem("stream_verification");
-    setIsVerified(false);
-    setShowVerification(true);
-    setStreamData(null);
-    setHlsUrl("");
-    setAvailableStreams([]);
-    setStreamToken("");
-    setVerificationData({ email: "", code: "" });
-    setIdnLiveShow(null);
+    setIsVerified(false); setShowVerification(true);
+    setStreamData(null); setHlsUrl(""); setAvailableStreams([]);
+    setStreamToken(""); setVerificationData({ email: "", code: "" }); setIdnLiveShow(null);
   };
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -806,17 +704,14 @@ function LiveStream() {
               <div className="form-group">
                 <label>Email</label>
                 <input
-                  type="email"
-                  name="email"
+                  type="email" name="email"
                   value={verificationData.email}
                   onChange={handleInputChange}
                   placeholder="email@example.com"
                   required
                 />
               </div>
-              {verificationError && (
-                <div className="error-message">{verificationError}</div>
-              )}
+              {verificationError && <div className="error-message">{verificationError}</div>}
               {verifying
                 ? <button type="button" className="verify-button" disabled><span className="spinner"></span> Memverifikasi...</button>
                 : <button type="submit" className="verify-button">✓ Verifikasi Akses</button>
@@ -831,10 +726,7 @@ function LiveStream() {
                 <li>Session tetap aktif saat refresh halaman</li>
                 <li>
                   Punya membership monthly?{" "}
-                  <span
-                    style={{ color: "#DC1F2E", cursor: "pointer", fontWeight: 700 }}
-                    onClick={() => navigate("/login")}
-                  >
+                  <span style={{ color: "#DC1F2E", cursor: "pointer", fontWeight: 700 }} onClick={() => navigate("/login")}>
                     Login di sini
                   </span>
                 </li>
@@ -847,54 +739,47 @@ function LiveStream() {
     );
   }
 
-  // Hapus ini dari render:
-// if (loading || fetchingIdnShow) {
-// Ganti jadi:
-if (loading) {
-  return (
-    <div className="loading-container">
-      <div className="loading-content">
-        <div className="spinner-large"></div>
-        <h2>Memuat live stream...</h2>
-        <p>Mengambil informasi show...</p>
+  if (loading) {
+    return (
+      <div className="loading-container">
+        <div className="loading-content">
+          <div className="spinner-large"></div>
+          <h2>Memuat live stream...</h2>
+          <p>Mengambil informasi show...</p>
+        </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
-if (error && !streamData) {
-  return (
-    <div className="error-container">
-      <div className="error-content">
-        <div className="error-icon"></div>
-        <h2>Terjadi Kesalahan</h2>
-        <p>{error}</p>
-        <details style={{ marginTop: "12px", textAlign: "left", maxWidth: "500px", width: "100%" }}>
-          <summary style={{ cursor: "pointer", color: "#DC1F2E", fontSize: "12px", fontWeight: 700 }}>
-            ▼ Detail Error
-          </summary>
-          <pre style={{
-            fontSize: "11px", color: "rgba(255,255,255,0.5)",
-            background: "rgba(255,255,255,0.05)", padding: "10px",
-            borderRadius: "8px", marginTop: "8px",
-            whiteSpace: "pre-wrap", wordBreak: "break-all",
-          }}>
-            {error}
-          </pre>
-        </details>
-        <button
-          onClick={() => { setError(""); loadStreamData(); }}
-          className="back-button"
-          style={{ marginBottom: "10px", marginTop: "16px" }}
-        >
-          ↺ Coba Lagi
-        </button>
-        <button onClick={goBack} className="back-button">← Kembali</button>
+  if (error && !streamData) {
+    return (
+      <div className="error-container">
+        <div className="error-content">
+          <div className="error-icon"></div>
+          <h2>Terjadi Kesalahan</h2>
+          <p>{error}</p>
+          <details style={{ marginTop: "12px", textAlign: "left", maxWidth: "500px", width: "100%" }}>
+            <summary style={{ cursor: "pointer", color: "#DC1F2E", fontSize: "12px", fontWeight: 700 }}>
+              ▼ Detail Error
+            </summary>
+            <pre style={{
+              fontSize: "11px", color: "rgba(255,255,255,0.5)",
+              background: "rgba(255,255,255,0.05)", padding: "10px",
+              borderRadius: "8px", marginTop: "8px",
+              whiteSpace: "pre-wrap", wordBreak: "break-all",
+            }}>
+              {error}
+            </pre>
+          </details>
+          <button onClick={() => { setError(""); loadStreamData(); }} className="back-button" style={{ marginBottom: "10px", marginTop: "16px" }}>
+            ↺ Coba Lagi
+          </button>
+          <button onClick={goBack} className="back-button">← Kembali</button>
+        </div>
       </div>
-    </div>
-  );
-}
-  
+    );
+  }
+
   if (!streamData) {
     return (
       <div className="loading-container">
@@ -911,51 +796,28 @@ if (error && !streamData) {
     <div className="live-stream-page">
       <div className="stream-header">
         <button onClick={goBack} className="back-btn">← Kembali</button>
-
-        {/* Tampilkan info show dari IDN Plus jika ada, fallback ke showInfo */}
         {(idnLiveShow || showInfo) && (
           <div className="show-title">
             <span>{idnLiveShow?.title || showInfo?.title}</span>
             {idnLiveShow && (
-              <span
-                style={{
-                  marginLeft: "8px",
-                  background: "#DC1F2E",
-                  color: "#fff",
-                  fontSize: "10px",
-                  fontWeight: 700,
-                  padding: "2px 7px",
-                  borderRadius: "8px",
-                  letterSpacing: "1px",
-                  verticalAlign: "middle",
-                }}
-              >
-                LIVE
-              </span>
+              <span style={{
+                marginLeft: "8px", background: "#DC1F2E", color: "#fff",
+                fontSize: "10px", fontWeight: 700, padding: "2px 7px",
+                borderRadius: "8px", letterSpacing: "1px", verticalAlign: "middle",
+              }}>LIVE</span>
             )}
           </div>
         )}
-
         {!hasMonthlymember && (
           <button onClick={handleLogout} className="logout-btn">Logout</button>
         )}
         {hasMonthlymember && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              background: "#DC1F2E18",
-              border: "1px solid #DC1F2E40",
-              borderRadius: "20px",
-              padding: "4px 12px",
-              fontSize: "12px",
-              fontWeight: 700,
-              color: "#DC1F2E",
-            }}
-          >
-            ★ MONTHLY
-          </div>
+          <div style={{
+            display: "flex", alignItems: "center", gap: "6px",
+            background: "#DC1F2E18", border: "1px solid #DC1F2E40",
+            borderRadius: "20px", padding: "4px 12px",
+            fontSize: "12px", fontWeight: 700, color: "#DC1F2E",
+          }}>★ MONTHLY</div>
         )}
       </div>
 
@@ -972,13 +834,8 @@ if (error && !streamData) {
               />
             ) : (
               <div style={{
-                width: "100%",
-                aspectRatio: "16/9",
-                background: "#0e0e1a",
-                borderRadius: "8px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
+                width: "100%", aspectRatio: "16/9", background: "#0e0e1a",
+                borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center",
               }}>
                 <div style={{ textAlign: "center", color: "#7878a8" }}>
                   <div className="spinner-large" style={{ margin: "0 auto 12px" }} />
@@ -988,43 +845,24 @@ if (error && !streamData) {
             )}
           </div>
 
-          {/* Info tambahan dari IDN Plus */}
           {idnLiveShow && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                padding: "10px 14px",
-                background: "rgba(220,31,46,0.07)",
-                borderRadius: "8px",
-                margin: "10px 0",
-                border: "1px solid rgba(220,31,46,0.15)",
-              }}
-            >
+            <div style={{
+              display: "flex", alignItems: "center", gap: "12px",
+              padding: "10px 14px", background: "rgba(220,31,46,0.07)",
+              borderRadius: "8px", margin: "10px 0",
+              border: "1px solid rgba(220,31,46,0.15)",
+            }}>
               {idnLiveShow.image_url && (
-                <img
-                  src={idnLiveShow.image_url}
-                  alt={idnLiveShow.title}
-                  style={{
-                    width: "54px",
-                    height: "54px",
-                    borderRadius: "8px",
-                    objectFit: "cover",
-                    flexShrink: 0,
-                  }}
+                <img src={idnLiveShow.image_url} alt={idnLiveShow.title}
+                  style={{ width: "54px", height: "54px", borderRadius: "8px", objectFit: "cover", flexShrink: 0 }}
                 />
               )}
               <div>
-                <div style={{ fontWeight: 700, fontSize: "14px", color: "#fff" }}>
-                  {idnLiveShow.title}
-                </div>
+                <div style={{ fontWeight: 700, fontSize: "14px", color: "#fff" }}>{idnLiveShow.title}</div>
                 <div style={{ fontSize: "12px", color: "rgba(255,255,255,0.55)", marginTop: "2px" }}>
                   👁 {idnLiveShow.view_count?.toLocaleString() || 0} penonton
                   {idnLiveShow.idnliveplus?.description && (
-                    <span style={{ marginLeft: "10px" }}>
-                      📝 {idnLiveShow.idnliveplus.description}
-                    </span>
+                    <span style={{ marginLeft: "10px" }}>📝 {idnLiveShow.idnliveplus.description}</span>
                   )}
                 </div>
               </div>
@@ -1038,10 +876,7 @@ if (error && !streamData) {
                 <span className="member-count">{members.length} Member</span>
               </div>
               {loadingMembers ? (
-                <div className="members-loading">
-                  <div className="spinner"></div>
-                  <p>Memuat lineup...</p>
-                </div>
+                <div className="members-loading"><div className="spinner"></div><p>Memuat lineup...</p></div>
               ) : (
                 <div className="members-grid">
                   {members.map((member) => (
@@ -1055,26 +890,20 @@ if (error && !streamData) {
             </div>
           )}
 
-          <div className="stream-footer">
-            <p>POWERED BY JKT48Connect</p>
-          </div>
+          <div className="stream-footer"><p>POWERED BY JKT48Connect</p></div>
         </div>
 
         <div className="chat-sidebar">
           <div className="chat-header">
             <span>Live Chat</span>
-            <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.5)" }}>
-              {chatMessages.length} Pesan
-            </span>
+            <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.5)" }}>{chatMessages.length} Pesan</span>
           </div>
-
           <div className="chat-messages">
             {chatMessages.map((msg, idx) => (
               <div key={idx} className="chat-message">
                 <img
                   src={msg.avatar_url || `https://ui-avatars.com/api/?name=${msg.username}`}
-                  alt="avatar"
-                  className="chat-avatar"
+                  alt="avatar" className="chat-avatar"
                 />
                 <div className="chat-message-content">
                   <div className="chat-username">
@@ -1083,11 +912,7 @@ if (error && !streamData) {
                     )}
                     {msg.username}
                     {msg.bluetick && (
-                      <span
-                        className="bluetick-icon"
-                        title="Verified"
-                        style={{ display: "inline-flex", marginLeft: "4px" }}
-                      >
+                      <span className="bluetick-icon" title="Verified" style={{ display: "inline-flex", marginLeft: "4px" }}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                           <path d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.71-3.998-3.918-3.998-.47 0-.92.084-1.336.25C14.818 2.415 13.51 1.5 12 1.5s-2.816.917-3.337 2.25c-.416-.165-.866-.25-1.336-.25-2.21 0-3.918 1.79-3.918 4 0 .495.084.965.238 1.4-1.273.65-2.148 2.02-2.148 3.6 0 1.46.726 2.75 1.83 3.444-.06.315-.09.64-.09.966 0 2.21 1.71 3.998 3.918 3.998.53 0 1.04-.1 1.51-.282.825 1.155 2.15 1.924 3.63 1.924s2.805-.767 3.63-1.924c.47.182.98.282 1.51.282 2.21 0 3.918-1.79 3.918-4 0-.325-.03-.65-.09-.966 1.105-.694 1.83-1.984 1.83-3.444z" fill="#1DA1F2"/>
                           <path d="M10.42 16.273L6.46 12.31l1.41-1.414 2.55 2.548 6.42-6.42 1.414 1.415-7.834 7.834z" fill="white"/>
@@ -1101,7 +926,6 @@ if (error && !streamData) {
             ))}
             <div ref={chatEndRef} />
           </div>
-
           <div className="chat-input-container">
             {isChatLoggingIn ? (
               <div className="chat-disabled-overlay">Memuat info akun...</div>
@@ -1115,21 +939,8 @@ if (error && !streamData) {
                   className="chat-input"
                   maxLength={200}
                 />
-                <button
-                  type="submit"
-                  className="chat-send-btn"
-                  disabled={!chatInput.trim()}
-                >
-                  <svg
-                    width="20"
-                    height="20"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
+                <button type="submit" className="chat-send-btn" disabled={!chatInput.trim()}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="22" y1="2" x2="11" y2="13"></line>
                     <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                   </svg>
@@ -1138,10 +949,7 @@ if (error && !streamData) {
             ) : (
               <div className="chat-disabled-overlay">
                 Hanya bisa melihat chat.<br />
-                <a
-                  href="/login"
-                  onClick={(e) => { e.preventDefault(); navigate("/login"); }}
-                >
+                <a href="/login" onClick={(e) => { e.preventDefault(); navigate("/login"); }}>
                   Login JKT48Connect
                 </a>{" "}
                 untuk ikut komen.
@@ -1153,5 +961,3 @@ if (error && !streamData) {
     </div>
   );
 }
-
-export default LiveStream;
