@@ -93,79 +93,52 @@ const Icons = {
       <path d="M20 6v14" />
     </svg>
   ),
-  ChevronLeft: () => (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <path d="M10 3L5 8L10 13" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  ),
-  ChevronRight: () => (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <path d="M6 3L11 8L6 13" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  Sparkle: ({ size = 16, color = "currentColor" }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v4M12 17v4M5 12H1M23 12h-4M7.05 7.05 4.93 4.93M19.07 19.07l-2.12-2.12M7.05 16.95 4.93 19.07M19.07 4.93l-2.12 2.12" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   ),
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  HERO CAROUSEL
+//  PAGE HEADER  (replaces HeroCarousel — no banner image, layout only)
 // ══════════════════════════════════════════════════════════════════════════════
-function HeroCarousel() {
-  const [current, setCurrent] = useState(0);
-  const timerRef = useRef(null);
-
-  const banners = [
-    "https://res.cloudinary.com/haymzm4wp/image/upload/v1760105848/bi5ej2hgh0cc2uowu5xr.jpg",
-    "https://res.cloudinary.com/haymzm4wp/image/upload/v1709811057/hjsfgaw0kf3fhxg677fs.jpg",
-    "https://res.cloudinary.com/haymzm4wp/image/upload/v1709811568/hm6aztwojrngb6ryrdn9.png",
-    "https://res.cloudinary.com/haymzm4wp/image/upload/v1746940686/gnzangtum7a8ygmk8hvj.jpg",
-    "https://res.cloudinary.com/haymzm4wp/image/upload/v1746940449/zjdka1gtuuoc5gx9kkco.jpg",
-  ];
-
-  const resetTimer = useCallback(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setCurrent((p) => (p + 1) % banners.length);
-    }, 6000);
-  }, [banners.length]);
-
-  useEffect(() => {
-    resetTimer();
-    return () => clearInterval(timerRef.current);
-  }, [resetTimer]);
-
-  const go = (dir) => {
-    setCurrent((p) =>
-      dir === "prev"
-        ? p === 0 ? banners.length - 1 : p - 1
-        : (p + 1) % banners.length
-    );
-    resetTimer();
-  };
+function PageHeader({ liveCount, upcomingCount }) {
+  const now = new Date();
+  const hour = now.getHours();
+  const greeting =
+    hour < 11 ? "Selamat Pagi" : hour < 15 ? "Selamat Siang" : hour < 19 ? "Selamat Sore" : "Selamat Malam";
 
   return (
-    <div className="hero-carousel fade-in-up">
-      <div className="hero-carousel-inner">
-        {banners.map((src, i) => (
-          <div key={i} className={`hero-slide ${i === current ? "active" : ""}`}>
-            <img src={src} alt={`Banner ${i + 1}`} loading={i === 0 ? "eager" : "lazy"} />
+    <div className="page-header fade-in-up">
+      <div className="page-header-main">
+        <p className="page-header-greeting">
+          <Icons.Sparkle size={14} color="#FFD700" /> {greeting}
+        </p>
+        <h1 className="page-header-title">
+          Nonton Show <span className="page-header-highlight">JKT48</span> Kapan Saja
+        </h1>
+        <p className="page-header-subtitle">
+          Live streaming, jadwal show, dan member live — semua dalam satu tempat.
+        </p>
+      </div>
+
+      <div className="page-header-stats">
+        <div className="page-header-stat">
+          <span className={`page-header-stat-dot ${liveCount > 0 ? "is-live" : ""}`}></span>
+          <div>
+            <div className="page-header-stat-value">{liveCount}</div>
+            <div className="page-header-stat-label">Live Sekarang</div>
           </div>
-        ))}
-
-        <button className="hero-arrow hero-arrow-left" onClick={() => go("prev")} aria-label="Previous">
-          <Icons.ChevronLeft />
-        </button>
-        <button className="hero-arrow hero-arrow-right" onClick={() => go("next")} aria-label="Next">
-          <Icons.ChevronRight />
-        </button>
-
-        <div className="hero-dots">
-          {banners.map((_, i) => (
-            <button
-              key={i}
-              className={`hero-dot ${i === current ? "active" : ""}`}
-              onClick={() => { setCurrent(i); resetTimer(); }}
-              aria-label={`Slide ${i + 1}`}
-            />
-          ))}
+        </div>
+        <div className="page-header-stat-divider"></div>
+        <div className="page-header-stat">
+          <Icons.Calendar size={16} color="#FFD700" />
+          <div>
+            <div className="page-header-stat-value">{upcomingCount}</div>
+            <div className="page-header-stat-label">Show Mendatang</div>
+          </div>
         </div>
       </div>
     </div>
@@ -520,7 +493,7 @@ function AppBannerSection() {
 // ══════════════════════════════════════════════════════════════════════════════
 const NEWS_API = `https://v5.jkt48connect.com/api/jkt48/news?apikey=JKTCONNECT`;
 
-// ── Tambah kategori baru ──────────────────────────────────────────────────
+// ── Kategori warna ──────────────────────────────────────────────────
 const categoryColor = {
   Theater:           { bg: "rgba(220,31,46,0.15)",   color: "#DC1F2E" },
   Birthday:          { bg: "rgba(255,105,180,0.15)",  color: "#FF69B4" },
@@ -531,10 +504,9 @@ const categoryColor = {
   Other:             { bg: "rgba(255,255,255,0.08)",  color: "rgba(255,255,255,0.5)" },
 };
 
-// ── proxyImg: tidak perlu proxy, images.jkt48connect.com sudah aman ───────
 function proxyImg(url) {
   if (!url) return DEFAULT_IMG;
-  return url; // langsung pakai, tidak perlu worker proxy
+  return url;
 }
 
 function NewsSection() {
@@ -612,11 +584,10 @@ function NewsSection() {
               {/* Thumbnail */}
               <div className="news-card-thumb">
                 <img
-  src={proxyImg(item.background_image)}
-  alt={item.title}
-  onError={(e) => { e.target.src = DEFAULT_IMG; }}
-/>
-                {/* Category badge */}
+                  src={proxyImg(item.background_image)}
+                  alt={item.title}
+                  onError={(e) => { e.target.src = DEFAULT_IMG; }}
+                />
                 <span
                   className="news-category-badge"
                   style={{
@@ -647,7 +618,7 @@ function NewsSection() {
 // ══════════════════════════════════════════════════════════════════════════════
 //  NEXT SHOW SECTION  (IDN Plus → Theater fallback, no duplicates)
 // ══════════════════════════════════════════════════════════════════════════════
-function NextShowSection() {
+function NextShowSection({ onCountChange }) {
   const [shows, setShows] = useState([]);
   const [source, setSource] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -660,18 +631,20 @@ function NextShowSection() {
           const res = await fetch(IDN_PLUS_API);
           const data = await res.json();
           if (data.status === 200 && Array.isArray(data.data) && data.data.length > 0) {
-  idnShows = data.data.filter((s) => {
-    const creatorName = (s.creator?.name || "").toLowerCase();
-    return creatorName.includes("jkt48") || creatorName.includes("jkt 48");
-  });
-}
+            idnShows = data.data.filter((s) => {
+              const creatorName = (s.creator?.name || "").toLowerCase();
+              return creatorName.includes("jkt48") || creatorName.includes("jkt 48");
+            });
+          }
         } catch (e) {
           console.error("Error fetching IDN Plus:", e);
         }
 
         if (idnShows.length > 0) {
-          setShows(idnShows.map((s) => normalizeShow(s, "idn")));
+          const normalized = idnShows.map((s) => normalizeShow(s, "idn"));
+          setShows(normalized);
           setSource("idn");
+          onCountChange?.(normalized.filter((s) => s.status !== "live").length);
           return;
         }
 
@@ -705,12 +678,13 @@ function NextShowSection() {
           return !idnKeys.has(key);
         });
 
-        setShows(
-  deduped
-    .map((s) => normalizeShow(s, "theater"))
-    .filter((s) => s.status !== "past")
-);
+        const normalized = deduped
+          .map((s) => normalizeShow(s, "theater"))
+          .filter((s) => s.status !== "past");
+
+        setShows(normalized);
         setSource("theater");
+        onCountChange?.(normalized.length);
       } catch (e) {
         console.error("Error in fetchShows:", e);
       } finally {
@@ -792,7 +766,7 @@ function NextShowSection() {
           <p>Jadwal show akan muncul di sini saat tersedia.</p>
         </div>
       ) : (
-        <div className="upcoming-shows-grid">
+        <div className="upcoming-shows-rail">
           {shows.map((show) => (
             <ShowCard
               key={show.id}
@@ -860,6 +834,7 @@ function ShowCard({ show, formatDate, formatTime, typeLabelColor }) {
               color: typeLabelColor[show.type]?.color || "rgba(255,255,255,0.7)",
               display: "inline-block",
               marginBottom: "6px",
+              width: "fit-content",
             }}
           >
             {show.type}{show.referenceCode ? ` · ${show.referenceCode}` : ""}
@@ -934,7 +909,7 @@ function ShowCard({ show, formatDate, formatTime, typeLabelColor }) {
 // ══════════════════════════════════════════════════════════════════════════════
 //  LIVE SHOWS SECTION
 // ══════════════════════════════════════════════════════════════════════════════
-function LiveShowsSection() {
+function LiveShowsSection({ onLiveCountChange }) {
   const [shows, setShows] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -956,8 +931,10 @@ function LiveShowsSection() {
             server: "idn",
           }));
         setShows(liveShows);
+        onLiveCountChange?.(liveShows.length);
       } else {
         setShows([]);
+        onLiveCountChange?.(0);
       }
     } catch (e) {
       console.error("Error fetching live shows:", e);
@@ -965,7 +942,7 @@ function LiveShowsSection() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onLiveCountChange]);
 
   useEffect(() => { fetchLiveShows(); }, [fetchLiveShows]);
   useEffect(() => {
@@ -1069,7 +1046,6 @@ function RecentLiveSection() {
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {
-          // Duplicate array to ensure seamless marquee rolling even if few items
           setRecentShows([...data, ...data]);
         }
       })
@@ -1119,14 +1095,24 @@ function RecentLiveSection() {
 //  HOME PAGE
 // ══════════════════════════════════════════════════════════════════════════════
 function Home() {
+  const [liveCount, setLiveCount] = useState(0);
+  const [upcomingCount, setUpcomingCount] = useState(0);
+
   return (
     <div className="home-page">
       <div className="home-content">
-        <HeroCarousel />
-        <NextShowSection />
-        <LiveShowsSection />
-        <NewsSection /> 
+        <PageHeader liveCount={liveCount} upcomingCount={upcomingCount} />
+
+        <div className="home-grid-layout">
+          <div className="home-grid-main">
+            <LiveShowsSection onLiveCountChange={setLiveCount} />
+            <NextShowSection onCountChange={setUpcomingCount} />
+            <NewsSection />
+          </div>
+        </div>
+
         <RecentLiveSection />
+        <AppBannerSection />
       </div>
     </div>
   );
