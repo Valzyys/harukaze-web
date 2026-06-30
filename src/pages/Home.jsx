@@ -1112,7 +1112,6 @@ function Home() {
         </div>
 
         <RecentLiveSection />
-        <AppBannerSection />
       </div>
     </div>
   );
