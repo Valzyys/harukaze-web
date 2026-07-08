@@ -18,6 +18,7 @@ import Verify from "./pages/verify";
 import Replay from "./pages/replay";
 import AdminLive from "./pages/admin";
 import BuyShowAccess from "./pages/buy-show";
+import BuyMembership from "./pages/membership";
 
 // ─────────────────────────────────────────────────────────────
 //  APP
@@ -47,7 +48,8 @@ function App() {
           <Route path="/live/:playbackId"   element={<LiveStream />} />
           <Route path="/verify"             element={<Verify />} />
           <Route path="/replay/:playbackId" element={<Replay />} /> 
-          <Route path="/buyshow" element={<BuyShowAccess />} />
+          <Route path="/buyshow" element={<BuyShowAccess />} /> 
+          <Route path="/membership" element={<BuyMembership />} />
           <Route path="/admin" element={<AdminLive />} />
           <Route path="*"                   element={<NotFound />} />
         </Routes>
