@@ -5,6 +5,7 @@ function Register() {
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     name: "",
+    username: "",
     email: "",
     whatsapp: "",
     password: "",
@@ -17,13 +18,15 @@ function Register() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const navigate = useNavigate();
 
+  const API_BASE_URL = "https://v5.jkt48connect.com/api/harukaze";
+
   useEffect(() => {
     const checkLogin = () => {
       try {
         const loginData = JSON.parse(
           sessionStorage.getItem("userLogin") || "null"
         );
-        if (loginData && loginData.isLoggedIn && loginData.token) {
+        if (loginData && loginData.isLoggedIn && loginData.access_token) {
           navigate("/");
           return;
         }
@@ -70,6 +73,14 @@ function Register() {
         [name]: cleaned,
       }));
     }
+
+    if (name === "username") {
+      const cleaned = value.replace(/\s/g, "").toLowerCase();
+      setFormData((prev) => ({
+        ...prev,
+        [name]: cleaned,
+      }));
+    }
   };
 
   const validateForm = () => {
@@ -80,6 +91,25 @@ function Register() {
 
     if (formData.name.trim().length < 3) {
       showToast("Nama minimal 3 karakter", "error");
+      return false;
+    }
+
+    if (!formData.username.trim()) {
+      showToast("Username harus diisi", "error");
+      return false;
+    }
+
+    if (formData.username.trim().length < 3) {
+      showToast("Username minimal 3 karakter", "error");
+      return false;
+    }
+
+    const usernameRegex = /^[a-zA-Z0-9_]+$/;
+    if (!usernameRegex.test(formData.username)) {
+      showToast(
+        "Username hanya boleh huruf, angka, dan underscore",
+        "error"
+      );
       return false;
     }
 
@@ -138,24 +168,21 @@ function Register() {
 
     try {
       const requestBody = {
-        name: formData.name.trim(),
+        username: formData.username.trim(),
         email: formData.email.trim(),
-        whatsapp: formData.whatsapp,
         password: formData.password,
-        password_confirmation: formData.confirmPassword,
+        full_name: formData.name.trim(),
+        phone: formData.whatsapp,
       };
 
-      const response = await fetch(
-        "https://v2.jkt48connect.com/api/dashboard/register?username=vzy&password=vzy",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }
-      );
+      const response = await fetch(`${API_BASE_URL}/auth/register`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
 
       const contentType = response.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
@@ -175,6 +202,19 @@ function Register() {
           "userRegistration",
           JSON.stringify(registrationData)
         );
+
+        // Langsung simpan session login karena register sudah
+        // mengembalikan access_token & refresh_token (auto-login)
+        const loginData = {
+          isLoggedIn: true,
+          user: data.data.user,
+          access_token: data.data.access_token,
+          refresh_token: data.data.refresh_token,
+          token_type: data.data.token_type,
+          expires_in: data.data.expires_in,
+          loggedInAt: new Date().toISOString(),
+        };
+        sessionStorage.setItem("userLogin", JSON.stringify(loginData));
 
         showToast(
           "Registrasi berhasil! Mengalihkan ke halaman login...",
@@ -210,6 +250,7 @@ function Register() {
   const handleReset = () => {
     setFormData({
       name: "",
+      username: "",
       email: "",
       whatsapp: "",
       password: "",
@@ -315,6 +356,45 @@ function Register() {
                 autoComplete="name"
               />
               <small className="form-hint">Nama sesuai identitas Anda</small>
+            </div>
+
+            <div
+              className={`form-group ${
+                focusedField === "username" ? "focused" : ""
+              }`}
+            >
+              <label htmlFor="username">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+                Username
+              </label>
+              <input
+                type="text"
+                id="username"
+                name="username"
+                value={formData.username}
+                onChange={handleInputChange}
+                onFocus={() => setFocusedField("username")}
+                onBlur={() => setFocusedField(null)}
+                placeholder="username_kamu"
+                className="form-input"
+                disabled={loading}
+                autoComplete="username"
+              />
+              <small className="form-hint">
+                Huruf, angka, dan underscore saja, tanpa spasi
+              </small>
             </div>
 
             <div
@@ -733,7 +813,7 @@ function Register() {
                 </li>
                 <li>
                   <span className="info-icon">✓</span>
-                  <span>Pastikan email dan nomor sduah di input pada form pembelian</span>
+                  <span>Pastikan email dan nomor sudah di input pada form pembelian</span>
                 </li>
               </ul>
             </div>
