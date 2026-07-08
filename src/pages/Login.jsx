@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 
-const API_BASE = "https://v2.jkt48connect.com/api/jkt48connect";
-const API_KEY = "JKTCONNECT";
+const API_BASE = "https://v5.jkt48connect.com/api/harukaze";
 
 function Login() {
   const [loading, setLoading] = useState(false);
@@ -56,7 +55,8 @@ function Login() {
     if (!validateForm()) return;
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/auth/login?apikey=${API_KEY}`, {
+      // Endpoint baru: POST /auth/login, tanpa apikey di query string
+      const response = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({
@@ -67,16 +67,19 @@ function Login() {
       const data = await response.json();
 
       if (data.status === true) {
+        // Shape response baru: data.data.access_token / refresh_token / user (bukan data.data.session)
         const loginData = {
           isLoggedIn: true,
-          token: data.data.session?.access_token,
-          sessionId: data.data.session?.id,
-          expiresAt: data.data.session?.expires_at,
+          token: data.data.access_token,
+          refreshToken: data.data.refresh_token,
+          tokenType: data.data.token_type,
+          expiresIn: data.data.expires_in,
           user: data.data.user,
           loginAt: new Date().toISOString(),
         };
         sessionStorage.setItem("userLogin", JSON.stringify(loginData));
-        sessionStorage.setItem("authToken", data.data.session?.access_token);
+        sessionStorage.setItem("authToken", data.data.access_token);
+        sessionStorage.setItem("refreshToken", data.data.refresh_token);
         showToast("Login berhasil! Mengalihkan ke halaman utama...", "success");
         setTimeout(() => navigate("/"), 1500);
       } else {
@@ -235,7 +238,7 @@ function Login() {
               </div>
               <ul className="lp-info__list">
                 <li>Login menggunakan username atau email terdaftar</li>
-                <li>Session berlaku selama 24 jam</li>
+                <li>Access token berlaku 1 jam, refresh token 30 hari</li>
                 <li>Jaga kerahasiaan password Anda</li>
                 <li>Akses cepat ke semua livestream</li>
               </ul>
@@ -526,4 +529,3 @@ function Login() {
 }
 
 export default Login;
-
