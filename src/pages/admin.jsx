@@ -112,14 +112,12 @@ function LoginScreen({ onLoggedIn, toast }) {
     setError("");
     setLoading(true);
     try {
-      // 1) Login lewat /auth/login (endpoint umum, bukan endpoint admin khusus)
       const res = await apiFetch("/auth/login", { method: "POST", body: JSON.stringify(form) });
       if (!res.status) { setError(res.message || "Login gagal"); setLoading(false); return; }
 
       const token = res.data.access_token;
       const refreshToken = res.data.refresh_token;
 
-      // 2) Pastikan akun ini benar admin dengan mencoba 1 endpoint /admin/*
       const check = await apiFetch("/admin/logs/recent?limit=1", {}, token);
       if (check._httpStatus === 403) {
         setError("Akun ini bukan admin. Akses ditolak.");
@@ -286,7 +284,7 @@ function AccessEditModal({ access, token, onClose, onSuccess, toast }) {
     <Modal title={`Edit Akses — ${access.access_code}`} onClose={onClose}>
       <div className="hkz-form-col">
         <div className="hkz-subtext" style={{ marginBottom: -4 }}>
-          User: {access.username} ({access.email}) · Tipe: {access.access_type}
+          User: {access.username || "— (tanpa akun / kode manual)"} {access.email ? `(${access.email})` : ""} · Tipe: {access.access_type}
         </div>
         <Field label="Status">
           <select className="hkz-input" value={form.is_active ? "true" : "false"} onChange={(e) => set("is_active", e.target.value === "true")}>
@@ -309,6 +307,130 @@ function AccessEditModal({ access, token, onClose, onSuccess, toast }) {
   );
 }
 
+// ── Buat kode akses manual — TANPA user_id, diperuntukkan untuk yang tidak login ──
+function AccessCreateModal({ token, onClose, onSuccess, toast }) {
+  const [form, setForm] = useState({
+    access_type: "membership",
+    show_code: "",
+    label: "",
+    duration_days: "30",
+    usage_limit: "1",
+    quantity: "1",
+    notes: "",
+  });
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null); // array kode setelah sukses
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const handleSubmit = async () => {
+    if (form.access_type === "pershow" && !form.show_code) {
+      toast("show_code wajib diisi untuk tipe pershow", "error"); return;
+    }
+    setLoading(true);
+    try {
+      const body = {
+        access_type: form.access_type,
+        show_code: form.access_type === "pershow" ? form.show_code : undefined,
+        label: form.label || undefined,
+        duration_days: form.duration_days === "" ? null : Number(form.duration_days),
+        usage_limit: form.usage_limit === "" ? -1 : Number(form.usage_limit),
+        quantity: form.quantity === "" ? 1 : Number(form.quantity),
+        notes: form.notes || undefined,
+      };
+      const res = await apiFetch("/admin/access/create", { method: "POST", body: JSON.stringify(body) }, token);
+      if (res.status) {
+        toast(res.message || "Kode akses berhasil dibuat!");
+        setResult(Array.isArray(res.data) ? res.data : [res.data]);
+        onSuccess();
+      } else {
+        toast(res.message || "Gagal membuat kode akses", "error");
+      }
+    } catch (e) { toast(e.message, "error"); }
+    finally { setLoading(false); }
+  };
+
+  const handleCopy = (code) => {
+    navigator.clipboard.writeText(code);
+    toast("Kode disalin ke clipboard!");
+  };
+  const handleCopyAll = () => {
+    navigator.clipboard.writeText(result.map((r) => r.access_code).join("\n"));
+    toast(`${result.length} kode disalin ke clipboard!`);
+  };
+
+  return (
+    <Modal title="Buat Kode Akses Manual" onClose={onClose}>
+      {result ? (
+        <div className="hkz-form-col">
+          <div className="hkz-notice" style={{ background: "#22c55e18", borderColor: "#22c55e44", color: "#22c55e" }}>
+            {result.length} kode akses berhasil dibuat. Kode ini bisa langsung dibagikan ke siapa saja — tidak perlu akun/login untuk memakainya.
+          </div>
+
+          <div className="hkz-form-col" style={{ gap: 8, maxHeight: 260, overflowY: "auto" }}>
+            {result.map((r) => (
+              <div key={r.access_code} className="hkz-access-code-box">
+                <span className="hkz-mono hkz-access-code-text">{r.access_code}</span>
+                <button className="hkz-btn-ghost" onClick={() => handleCopy(r.access_code)}>Salin</button>
+              </div>
+            ))}
+          </div>
+
+          <div className="hkz-form-col" style={{ gap: 6 }}>
+            <div className="hkz-subtext">Tipe: {result[0].access_type === "membership" ? "Membership" : "Pershow"}</div>
+            <div className="hkz-subtext">Berlaku hingga: {result[0].expires_at ? fmtDate(result[0].expires_at) : "Tanpa batas waktu"}</div>
+            <div className="hkz-subtext">Batas pakai per kode: {result[0].usage_limit === -1 ? "Unlimited" : result[0].usage_limit}</div>
+          </div>
+
+          <div className="hkz-form-row">
+            {result.length > 1 && (
+              <button className="hkz-btn-ghost" onClick={handleCopyAll}>Salin Semua Kode</button>
+            )}
+            <button className="hkz-btn-primary" onClick={onClose}>Selesai</button>
+          </div>
+        </div>
+      ) : (
+        <div className="hkz-form-col">
+          <div className="hkz-notice">
+            Kode akses ini tidak terikat akun manapun — siapa saja bisa memakainya lewat halaman verifikasi tanpa perlu login.
+          </div>
+
+          <Field label="Tipe Akses *">
+            <select className="hkz-input" value={form.access_type} onChange={(e) => set("access_type", e.target.value)}>
+              <option value="membership">Membership (akses semua show)</option>
+              <option value="pershow">Pershow (1 show tertentu)</option>
+            </select>
+          </Field>
+          {form.access_type === "pershow" && (
+            <Field label="Show Code *" hint="Kode show, misal: THEATER-JUL08">
+              <input className="hkz-input" value={form.show_code} onChange={(e) => set("show_code", e.target.value)} />
+            </Field>
+          )}
+          <Field label="Label" hint="Kosongkan untuk pakai nama default">
+            <input className="hkz-input" placeholder="misal: Bonus Giveaway" value={form.label} onChange={(e) => set("label", e.target.value)} />
+          </Field>
+          <div className="hkz-form-row">
+            <Field label="Durasi (hari)" hint="Kosongkan = tanpa batas waktu">
+              <input className="hkz-input" type="number" min="0" value={form.duration_days} onChange={(e) => set("duration_days", e.target.value)} />
+            </Field>
+            <Field label="Batas Pakai" hint="-1 = unlimited, 1 = sekali pakai">
+              <input className="hkz-input" type="number" value={form.usage_limit} onChange={(e) => set("usage_limit", e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Jumlah Kode" hint="Buat banyak kode sekaligus, maks 100">
+            <input className="hkz-input" type="number" min="1" max="100" value={form.quantity} onChange={(e) => set("quantity", e.target.value)} />
+          </Field>
+          <Field label="Catatan Internal">
+            <textarea className="hkz-input hkz-textarea" placeholder="misal: reward giveaway Twitter" value={form.notes} onChange={(e) => set("notes", e.target.value)} />
+          </Field>
+          <button onClick={handleSubmit} disabled={loading} className="hkz-btn-primary">
+            {loading ? <Spin /> : "Buat Kode Akses"}
+          </button>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function AccessTab({ token, toast }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -316,6 +438,7 @@ function AccessTab({ token, toast }) {
   const [accessType, setAccessType] = useState("");
   const [offset, setOffset] = useState(0);
   const [editing, setEditing] = useState(null);
+  const [showCreate, setShowCreate] = useState(false);
   const limit = 20;
 
   const fetchAccess = useCallback(async () => {
@@ -334,7 +457,7 @@ function AccessTab({ token, toast }) {
   useEffect(() => { fetchAccess(); }, [fetchAccess]);
 
   const handleRevoke = async (row) => {
-    if (!confirm(`Cabut akses ${row.access_code} milik ${row.email}?`)) return;
+    if (!confirm(`Cabut akses ${row.access_code}${row.email ? ` milik ${row.email}` : ""}?`)) return;
     try {
       const res = await apiFetch(`/admin/access/${row.id}`, { method: "DELETE" }, token);
       if (res.status) { toast("Akses dicabut"); fetchAccess(); }
@@ -353,6 +476,8 @@ function AccessTab({ token, toast }) {
           <option value="pershow">Pershow</option>
         </select>
         <button className="hkz-btn-ghost" onClick={fetchAccess}>↻ Refresh</button>
+        <div style={{ flex: 1 }} />
+        <button className="hkz-btn-primary hkz-btn-primary--sm" onClick={() => setShowCreate(true)}>+ Buat Kode Akses</button>
       </div>
 
       {loading ? (
@@ -372,8 +497,14 @@ function AccessTab({ token, toast }) {
                 <tr key={row.id}>
                   <td className="hkz-mono">{row.access_code}</td>
                   <td>
-                    <div>{row.username}</div>
-                    <div className="hkz-subtext">{row.email}</div>
+                    {row.username ? (
+                      <>
+                        <div>{row.username}</div>
+                        <div className="hkz-subtext">{row.email}</div>
+                      </>
+                    ) : (
+                      <span className="hkz-badge hkz-badge--muted">Manual / Tanpa Akun</span>
+                    )}
                   </td>
                   <td>{row.access_type === "membership" ? "Membership" : "Pershow"}</td>
                   <td>{row.show_title || row.label || "—"}</td>
@@ -404,6 +535,9 @@ function AccessTab({ token, toast }) {
 
       {editing && (
         <AccessEditModal access={editing} token={token} onClose={() => setEditing(null)} onSuccess={fetchAccess} toast={toast} />
+      )}
+      {showCreate && (
+        <AccessCreateModal token={token} onClose={() => setShowCreate(false)} onSuccess={fetchAccess} toast={toast} />
       )}
     </div>
   );
@@ -520,7 +654,6 @@ function PlansTab({ token, toast }) {
   const fetchPlans = useCallback(async () => {
     setLoading(true);
     try {
-      // Katalog publik — hanya menampilkan paket yang is_active=TRUE (tidak ada endpoint list admin khusus)
       const res = await apiFetch(`/membership/plans`, {});
       if (res.status) setPlans(res.data || []);
       else toast(res.message || "Gagal ambil paket", "error");
@@ -1174,6 +1307,14 @@ const styles = `
   .hkz-log-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; background: var(--bg3); border-radius: 8px; font-size: 12px; }
   .hkz-log-item-body { flex: 1; min-width: 0; }
   .hkz-log-error { color: #ff8080; font-size: 11px; }
+
+  /* Access code box (create modal) */
+  .hkz-access-code-box {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: var(--bg3); border: 1px dashed var(--accent);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .hkz-access-code-text { font-size: 16px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
 
   /* Responsive */
   @media (max-width: 640px) {
