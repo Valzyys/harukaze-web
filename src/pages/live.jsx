@@ -24,7 +24,7 @@ const harukazeFetch = async (path, opts = {}) => {
 
 // ── GiStream token constants ──────────────────────────────────────────────
 const TOKEN_API_BASE = "https://v5.jkt48connect.com";
-const STREAM_BASE    = "https://v1.jkt48connect.app";
+const STREAM_BASE    = "https://v1.jkt48connect.com";
 const SIGNING_PATH   = "/api/token/generate?apikey=JKTCONNECT";
 const PARTNER_KID    = "jkt48connect-v1";
 const PARTNER_SECRET = "gstream@jkt48connect@2108";
