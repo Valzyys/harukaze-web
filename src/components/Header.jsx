@@ -4,26 +4,22 @@ import "../styles/header.css";
 
 // ── Inline SVG Icons ──────────────────────────────────────────
 const Icons = {
-  // Logo play/stream icon
   Logo: () => (
     <svg viewBox="0 0 24 24" fill="white">
       <path d="M8 5v14l11-7z" />
     </svg>
   ),
-  // User icon
   User: () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
     </svg>
   ),
-  // Chevron Down
   ChevronDown: () => (
     <svg className="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="6 9 12 15 18 9" />
     </svg>
   ),
-  // Menu (hamburger)
   Menu: () => (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="3" y1="6" x2="21" y2="6" />
@@ -31,26 +27,37 @@ const Icons = {
       <line x1="3" y1="18" x2="21" y2="18" />
     </svg>
   ),
-  // Close (X)
   Close: () => (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   ),
-  // Profile icon
   Profile: () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
     </svg>
   ),
-  // Logout icon
   Logout: () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
       <polyline points="16 17 21 12 16 7" />
       <line x1="21" y1="12" x2="9" y2="12" />
+    </svg>
+  ),
+  // Membership icon (card)
+  Membership: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="5" width="20" height="14" rx="2" />
+      <line x1="2" y1="10" x2="22" y2="10" />
+    </svg>
+  ),
+  // Show icon (ticket)
+  Show: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2z" />
+      <line x1="13" y1="5" x2="13" y2="19" strokeDasharray="2 2" />
     </svg>
   ),
 };
@@ -65,6 +72,12 @@ const Header = () => {
   const [userInfo, setUserInfo] = useState(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
+
+  // ── Nav links (dipakai di desktop & mobile) ────────────────
+  const navLinks = [
+    { label: "Membership", path: "/membership", icon: Icons.Membership },
+    { label: "Show", path: "/buyshow", icon: Icons.Show },
+  ];
 
   // ── Auth check ─────────────────────────────────────────────
   const checkAuthStatus = () => {
@@ -161,6 +174,19 @@ const Header = () => {
           <span className="logo-bold">HARUKAZE48</span>
         </div>
 
+        {/* Desktop: nav links */}
+        <div className="nav-links desktop-only">
+          {navLinks.map((link) => (
+            <button
+              key={link.path}
+              className="nav-link-btn"
+              onClick={() => navigate(link.path)}
+            >
+              {link.label}
+            </button>
+          ))}
+        </div>
+
         {/* Desktop: right side */}
         <div className="nav-icons desktop-only">
           {!isLoggedIn ? (
@@ -221,6 +247,23 @@ const Header = () => {
 
       {/* Mobile menu panel */}
       <div className={`mobile-menu ${isMobileMenuOpen ? "open" : ""}`}>
+        {/* Nav links - selalu tampil, login atau enggak */}
+        <div className="mobile-nav-links mobile-only">
+          {navLinks.map((link) => {
+            const LinkIcon = link.icon;
+            return (
+              <button
+                key={link.path}
+                className="mobile-nav-link-item"
+                onClick={() => { setIsMobileMenuOpen(false); navigate(link.path); }}
+              >
+                <LinkIcon />
+                {link.label}
+              </button>
+            );
+          })}
+        </div>
+
         {!isLoggedIn ? (
           <div className="mobile-auth-buttons mobile-only">
             <button className="mobile-auth-btn login" onClick={() => { setIsMobileMenuOpen(false); navigate("/login"); }}>
