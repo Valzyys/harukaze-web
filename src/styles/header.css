@@ -65,6 +65,34 @@ header {
   opacity: 0.85;
 }
 
+/* ── Nav Links (desktop) ───────────────────────────────────── */
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  margin-right: auto;
+}
+
+.nav-link-btn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.65);
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  letter-spacing: 0.2px;
+}
+
+.nav-link-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
 /* ── Nav Right (desktop) ───────────────────────────────────── */
 .nav-icons {
   display: flex;
@@ -332,6 +360,8 @@ header {
   box-sizing: border-box;
   z-index: 9999;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
 }
 
 .mobile-menu.open {
@@ -348,6 +378,46 @@ header {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* ── Mobile nav links ──────────────────────────────────────── */
+.mobile-nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mobile-nav-link-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  font-family: 'Inter', sans-serif;
+  width: 100%;
+  text-align: left;
+}
+
+.mobile-nav-link-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #ffffff;
+}
+
+.mobile-nav-link-item svg {
+  width: 18px;
+  height: 18px;
+  opacity: 0.7;
+  flex-shrink: 0;
 }
 
 /* Mobile auth buttons */
@@ -529,6 +599,11 @@ header {
   .navbar {
     padding: 0 28px;
   }
+
+  .nav-link-btn {
+    padding: 8px 12px;
+    font-size: 12.5px;
+  }
 }
 
 @media (max-width: 768px) {
@@ -541,7 +616,8 @@ header {
     font-size: 18px;
   }
 
-  .nav-icons {
+  .nav-icons,
+  .nav-links {
     display: none;
   }
 
@@ -558,7 +634,8 @@ header {
   }
 
   .mobile-user-section,
-  .mobile-auth-buttons {
+  .mobile-auth-buttons,
+  .mobile-nav-links {
     display: flex !important;
   }
 }
@@ -585,7 +662,8 @@ header {
 
 @media (min-width: 769px) {
   .mobile-user-section,
-  .mobile-auth-buttons {
+  .mobile-auth-buttons,
+  .mobile-nav-links {
     display: none !important;
   }
 
