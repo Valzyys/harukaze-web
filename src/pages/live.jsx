@@ -26,7 +26,7 @@ const harukazeFetch = async (path, opts = {}) => {
 // Signing HMAC dilakukan di Worker terpisah (partner-session-worker.js),
 // bukan di sini, supaya secret tidak pernah ada di browser.
 const PARTNER_SIGNER_BASE = import.meta.env.VITE_PARTNER_SIGNER_BASE || "https://ap.harukaze48.my.id";
-const PARTNER_ORIGIN      = "https://harukaze48.my.id; // dipakai untuk playback_url & resume (browser -> partner langsung)
+const PARTNER_ORIGIN      = "https://harukaze48.my.id"; // dipakai untuk playback_url & resume (browser -> partner langsung)
 
 const ERROR_MESSAGES = {
   BAD_REQUEST: "Permintaan tidak lengkap atau formatnya salah.",
