@@ -22,132 +22,65 @@ const harukazeFetch = async (path, opts = {}) => {
   return res.json();
 };
 
-// ── GiStream token constants ──────────────────────────────────────────────
-const TOKEN_API_BASE = "https://v5.jkt48connect.com";
-const STREAM_BASE    = "https://v1.jkt48connect.com";
-const SIGNING_PATH   = "/api/token/generate?apikey=JKTCONNECT";
-const PARTNER_KID    = "jkt48connect-v1";
-const PARTNER_SECRET = "gstream@jkt48connect@2108";
+// ── Partner API (jkt48connect Partner) ─────────────────────────────────────
+// Signing HMAC dilakukan di Worker terpisah (partner-session-worker.js),
+// bukan di sini, supaya secret tidak pernah ada di browser.
+const PARTNER_SIGNER_BASE = import.meta.env.VITE_PARTNER_SIGNER_BASE || "https://ap.harukaze48.my.id";
+const PARTNER_ORIGIN      = "https://harukaze48.my.id; // dipakai untuk playback_url & resume (browser -> partner langsung)
 
-// ── HMAC helpers ───────────────────────────────────────────────────────────
-async function sha256Hex(str) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
-async function hmacSHA256Hex(secret, message) {
-  const key = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
-  );
-  const buf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
-async function buildHMACHeaders() {
-  const timestamp  = Date.now().toString();
-  const nonce      = crypto.randomUUID().replace(/-/g, "");
-  const bodyHash   = await sha256Hex("{}");
-  const signingStr = `${timestamp}:${nonce}:POST:${SIGNING_PATH}:${bodyHash}`;
-  const signature  = await hmacSHA256Hex(PARTNER_SECRET, signingStr);
-  return { "x-kid": PARTNER_KID, "x-timestamp": timestamp, "x-nonce": nonce, "x-signature": signature };
-}
-async function generateStreamToken(slugOrId, isSlug) {
-  const hmacHeaders = await buildHMACHeaders();
-  const res = await fetch(`${TOKEN_API_BASE}${SIGNING_PATH}`, {
-    method: "POST",
-    headers: {
-      ...hmacHeaders,
-      ...(isSlug ? { "x-slug": slugOrId } : { "x-showid": slugOrId }),
-      "Content-Type": "application/json",
-    },
-    body: "{}",
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error("Token server returned non-JSON response"); }
-  if (!data.status) throw new Error("Generate token gagal: " + data.message);
-  return data.data.token;
-}
-
-// ── M3U8 master playlist parser ─────────────────────────────────────────
-function parseM3U8(text) {
-  const lines   = text.split("\n").map(l => l.trim()).filter(Boolean);
-  const streams = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (!lines[i].startsWith("#EXT-X-STREAM-INF:")) continue;
-    const infLine = lines[i].substring("#EXT-X-STREAM-INF:".length);
-    const url     = lines[i + 1] && !lines[i + 1].startsWith("#") ? lines[i + 1] : null;
-    if (!url) continue;
-    const attrs = {};
-    const re    = /([A-Z0-9\-]+)=("([^"]*?)"|([^,]+))/g;
-    let m;
-    while ((m = re.exec(infLine)) !== null) attrs[m[1]] = m[3] !== undefined ? m[3] : m[4];
-    const bw  = parseInt(attrs["BANDWIDTH"] || "0", 10);
-    const res = attrs["RESOLUTION"] || "";
-    const fps = attrs["FRAME-RATE"] || "";
-    const height = res ? res.split("x")[1] : null;
-    const name   = height ? `${height}p` : `Stream ${streams.length + 1}`;
-    streams.push({
-      name, quality: name, bandwidth: bw,
-      bandwidth_label: bw >= 1_000_000 ? (bw / 1_000_000).toFixed(1) + " Mbps" : bw > 0 ? Math.round(bw / 1_000) + " Kbps" : "",
-      resolution: res, fps, url, manual_url: url, playlist_url: url,
-    });
-  }
-  streams.sort((a, b) => b.bandwidth - a.bandwidth);
-  return streams;
-}
-
-async function getStreamURL(token, slugOrId, isSlug) {
-  const param = isSlug ? `slug=${slugOrId}` : `showId=${slugOrId}`;
-  const res = await fetch(`${STREAM_BASE}/stream?${param}`, {
-    headers: { "x-api-token": token, ...(isSlug ? { "x-slug": slugOrId } : { "x-showid": slugOrId }) },
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`stream HTTP ${res.status}: ${text.slice(0, 300)}`);
-
-  if (text.trimStart().startsWith("#EXTM3U")) {
-    const qualities = parseM3U8(text);
-    if (qualities.length === 0) throw new Error(`M3U8 parsed tapi tidak ada stream. Response:\n${text.slice(0, 400)}`);
-    return { url: qualities[0].url, qualities };
-  }
-
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error(`Response bukan M3U8 maupun JSON (HTTP ${res.status}): ${text.slice(0, 300)}`); }
-  if (!data.success) throw new Error(`stream gagal: ${data.message || JSON.stringify(data).slice(0, 300)}`);
-
-  const streams = (data.streams || [])
-    .filter((s) => s && typeof s.url === "string" && s.url.length > 0)
-    .sort((a, b) => parseInt((b.BANDWIDTH || "0").split(",")[0]) - parseInt((a.BANDWIDTH || "0").split(",")[0]));
-
-  if (streams.length === 0) throw new Error(`Streams kosong. Response: ${JSON.stringify(data).slice(0, 400)}`);
-
-  const autoUrl   = data.stream_url || streams[0]?.url || "";
-  const qualities = streams.map((s, idx) => {
-    const bw  = parseInt((s.BANDWIDTH || "0").split(",")[0]);
-    const res = s.RESOLUTION || "";
-    const h   = res ? res.split("x")[1] : null;
-    return {
-      index: idx, name: h ? `${h}p` : (s.NAME || `q${idx}`), quality: s.NAME || `q${idx}`, bandwidth: bw,
-      bandwidth_label: bw >= 1_000_000 ? (bw / 1_000_000).toFixed(1) + " Mbps" : bw > 0 ? Math.round(bw / 1_000) + " Kbps" : "",
-      resolution: res, fps: s["FRAME-RATE"] || "", manual_url: s.url || "", playlist_url: s.url || "",
-    };
-  });
-  return { url: autoUrl, qualities };
-}
-
-const isSlugParam = (param) => {
-  if (!param) return false;
-  if (/^\d+$/.test(param)) return false;
-  if (/^SH\d+$/i.test(param)) return false;
-  return true;
+const ERROR_MESSAGES = {
+  BAD_REQUEST: "Permintaan tidak lengkap atau formatnya salah.",
+  SHOW_NOT_PURCHASED: "Show ini belum dibeli untuk akun kamu.",
+  STALE_REQUEST: "Waktu server tidak sinkron, coba lagi.",
+  REPLAY_DETECTED: "Permintaan ganda terdeteksi, coba lagi.",
+  KEY_NOT_FOUND: "Kredensial partner tidak dikenali.",
+  VIEW_QUOTA_EXCEEDED: "Kuota penonton sudah habis. Coba lagi nanti.",
+  SIGNATURE_REJECTED: "Permintaan tidak sah atau kedaluwarsa, coba lagi.",
+  ORIGIN_NOT_ALLOWED: "Domain ini belum terdaftar untuk mengakses stream.",
+  SESSION_BINDING_MISMATCH: "Sesi ini sedang dipakai di perangkat lain.",
+  PLAY_HEADER_REQUIRED: "Header pemutaran tidak terkirim.",
+  PLAY_HEADER_INVALID: "Sesi pemutaran kedaluwarsa, menyegarkan ulang...",
+  VARIANT_NOT_ALLOWED: "Resolusi ini tidak tersedia untuk paket kamu.",
+  KEY_LOCKED: "Akses partner sedang dibekukan.",
+  PARTNER_SUSPENDED: "Layanan streaming sedang tidak tersedia sementara.",
 };
+function errMsg(code, fallback) {
+  return ERROR_MESSAGES[code] || fallback || "Terjadi kesalahan saat memuat stream.";
+}
+
+// ── Buat sesi penonton lewat Worker signer, lalu tukar playback_url langsung ke partner origin ──
+async function createPartnerSession(showSlug, viewerId) {
+  const res = await fetch(`${PARTNER_SIGNER_BASE}/session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ show_slug: showSlug, viewer_id: viewerId, ttl: 120 }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(errMsg(data.code, data.message));
+  return data; // { playback_url, session_id, quota, max_resolution, ... }
+}
+
+async function exchangePlaybackUrl(playbackUrl) {
+  const res = await fetch(playbackUrl, { credentials: "include" });
+  const data = await res.json();
+  if (!data.ok) throw new Error(errMsg(data.code, data.message));
+  return data; // { playlist_url, play_header_name, play_header_value, max_resolution, expires_at }
+}
+
+async function resumePartnerSession() {
+  const res = await fetch(`${PARTNER_ORIGIN}/api/partner/resume`, { credentials: "include" });
+  const data = await res.json();
+  return data; // { ok, resumed, counted, playlist_url, play_header_name, play_header_value }
+}
 
 // ══════════════════════════════════════════════════════════════════════════
-//  HLS PLAYER (tanpa panel kualitas internal — dikontrol dari parent)
+//  HLS PLAYER — kini pakai X-Play-Key + credentials, dengan auto-resume
 // ══════════════════════════════════════════════════════════════════════════
-function HlsPlayer({ src, title, token, onLevelInfo }) {
+function HlsPlayer({ src, playHeaderName, playHeaderValue, title, onLevelInfo, onNeedResume }) {
   const videoRef = useRef(null);
   const hlsRef   = useRef(null);
   const retryRef = useRef(null);
+  const resumeTriesRef = useRef(0);
 
   const destroyHls = useCallback(() => {
     if (retryRef.current) { clearTimeout(retryRef.current); retryRef.current = null; }
@@ -159,7 +92,7 @@ function HlsPlayer({ src, title, token, onLevelInfo }) {
     if (!video || !src) return;
     destroyHls();
 
-    const makeConfig = () => ({
+    const makeConfig = (headerName, headerValue) => ({
       enableWorker: true, lowLatencyMode: false,
       maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 60 * 1000 * 1000,
       backBufferLength: 30, liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 10,
@@ -169,17 +102,19 @@ function HlsPlayer({ src, title, token, onLevelInfo }) {
       levelLoadingTimeOut: 10000, levelLoadingMaxRetry: 4, levelLoadingRetryDelay: 1000,
       abrEwmaDefaultEstimate: 500_000, abrBandWidthFactor: 0.8, abrBandWidthUpFactor: 0.7,
       abrEwmaFastLive: 3.0, abrEwmaSlowLive: 9.0, nudgeOffset: 0.3, nudgeMaxRetry: 5,
-      ...(token && {
-        xhrSetup: (xhr) => xhr.setRequestHeader("x-api-token", token),
-        fetchSetup: (context, initParams) => {
-          initParams.headers = { ...initParams.headers, "x-api-token": token };
-          return new Request(context.url, initParams);
-        },
-      }),
+      xhrSetup: (xhr) => {
+        xhr.withCredentials = true;
+        if (headerName && headerValue) xhr.setRequestHeader(headerName, headerValue);
+      },
+      fetchSetup: (context, initParams) => {
+        initParams.credentials = "include";
+        initParams.headers = { ...initParams.headers, ...(headerName && headerValue ? { [headerName]: headerValue } : {}) };
+        return new Request(context.url, initParams);
+      },
     });
 
     if (Hls.isSupported()) {
-      const hls = new Hls(makeConfig());
+      const hls = new Hls(makeConfig(playHeaderName, playHeaderValue));
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
@@ -195,6 +130,14 @@ function HlsPlayer({ src, title, token, onLevelInfo }) {
         }
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
+        const status = data.response?.code;
+        // Sesi ditolak (PLAY_HEADER_INVALID / expired) → minta resume, bukan retry biasa
+        if (status === 401 || status === 403) {
+          if (resumeTriesRef.current++ < 3) {
+            onNeedResume?.();
+          }
+          return;
+        }
         if (!data.fatal) return;
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
         else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
@@ -203,7 +146,7 @@ function HlsPlayer({ src, title, token, onLevelInfo }) {
           retryRef.current = setTimeout(() => {
             const v = videoRef.current;
             if (!v) return;
-            const newHls = new Hls(makeConfig());
+            const newHls = new Hls(makeConfig(playHeaderName, playHeaderValue));
             newHls.loadSource(src);
             newHls.attachMedia(v);
             newHls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
@@ -211,13 +154,13 @@ function HlsPlayer({ src, title, token, onLevelInfo }) {
           }, 2000);
         }
       });
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = src;
-      video.addEventListener("loadedmetadata", () => video.play().catch(() => {}));
+    } else {
+      // Native HLS (Safari) tidak didukung karena wajib header X-Play-Key
+      onNeedResume?.("unsupported");
     }
 
     return destroyHls;
-  }, [src, token, destroyHls, onLevelInfo]);
+  }, [src, playHeaderName, playHeaderValue, destroyHls, onLevelInfo, onNeedResume]);
 
   return (
     <video
@@ -240,7 +183,7 @@ const getSession = () => {
 };
 
 function LiveStream() {
-  const { playbackId } = useParams();
+  const { playbackId } = useParams(); // dipakai sebagai show_slug
   const navigate       = useNavigate();
 
   const [membershipChecked, setMembershipChecked] = useState(false);
@@ -260,13 +203,11 @@ function LiveStream() {
   const [members,        setMembers]        = useState([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
 
-  const [hlsUrl,           setHlsUrl]           = useState("");
-  const [availableStreams, setAvailableStreams] = useState([]);
-  const [streamToken,      setStreamToken]      = useState("");
-  const [activeQualityIdx, setActiveQualityIdx] = useState(-1); // -1 = auto
-  const [levelInfo,        setLevelInfo]        = useState({ name: "Auto", bandwidth: "" });
-  const [showQualityMenu,  setShowQualityMenu]  = useState(false);
-  const qualityMenuRef = useRef(null);
+  const [hlsUrl,          setHlsUrl]          = useState("");
+  const [playHeaderName,  setPlayHeaderName]  = useState("X-Play-Key");
+  const [playHeaderValue, setPlayHeaderValue] = useState("");
+  const [maxResolution,   setMaxResolution]   = useState(null);
+  const [levelInfo,       setLevelInfo]       = useState({ name: "Auto", bandwidth: "" });
 
   const [idnLiveShow, setIdnLiveShow] = useState(null);
 
@@ -277,6 +218,8 @@ function LiveStream() {
   const [chatOpenMobile,  setChatOpenMobile]  = useState(false);
   const chatEndRef  = useRef(null);
   const channelRef  = useRef(null);
+
+  const resumeInFlight = useRef(false);
 
   // ── Membership check — sekarang lewat /harukaze/profile (Bearer) ─────────
   const checkMembership = useCallback(async () => {
@@ -385,12 +328,11 @@ function LiveStream() {
     setLoadingMembers(false);
   };
 
+  // ── Flow baru: Worker signer -> session -> playback_url (browser->partner) -> playlist_url ──
   const loadStreamData = useCallback(async () => {
     try {
       setLoading(true); setError("");
-      if (!playbackId) { setError("Playback ID tidak ditemukan"); setLoading(false); return; }
-
-      const isSlug = isSlugParam(playbackId);
+      if (!playbackId) { setError("Show slug tidak ditemukan"); setLoading(false); return; }
 
       fetchNearestShow().then((nearestShow) => {
         if (nearestShow) {
@@ -399,16 +341,18 @@ function LiveStream() {
         }
       }).catch(() => {});
 
-      const token = await generateStreamToken(playbackId, isSlug);
-      setStreamToken(token);
+      const session = getSession();
+      const viewerId = session?.user?.user_id || null;
 
-      const { url, qualities } = await getStreamURL(token, playbackId, isSlug);
-      if (qualities.length > 0) setAvailableStreams(qualities);
-      if (!url) throw new Error("Stream URL kosong setelah fetch berhasil");
+      const sessionData = await createPartnerSession(playbackId, viewerId);
+      const playback = await exchangePlaybackUrl(sessionData.playback_url);
 
-      setHlsUrl(url);
-      setActiveQualityIdx(-1);
-      setStreamData({ playbackId, title: "Live Stream JKT48", viewerId: "viewer-" + Date.now() });
+      setHlsUrl(playback.playlist_url);
+      setPlayHeaderName(playback.play_header_name || "X-Play-Key");
+      setPlayHeaderValue(playback.play_header_value || "");
+      setMaxResolution(playback.max_resolution || sessionData.max_resolution || null);
+
+      setStreamData({ playbackId, title: "Live Stream JKT48", sessionId: sessionData.session_id });
 
       fetch(`https://v5.jkt48connect.com/api/jkt48/idnplus?apikey=${API_KEY}`)
         .then(r => r.json())
@@ -427,13 +371,26 @@ function LiveStream() {
     }
   }, [playbackId]);
 
-  const handleSelectQuality = (idx) => {
-    setActiveQualityIdx(idx);
-    setShowQualityMenu(false);
-    if (idx === -1) { loadStreamData(); return; }
-    const q = availableStreams[idx];
-    if (q?.manual_url) setHlsUrl(q.manual_url);
-  };
+  // ── Resume: dipanggil saat player minta sesi baru (401/403) atau saat refresh halaman ──
+  const handleResume = useCallback(async () => {
+    if (resumeInFlight.current) return;
+    resumeInFlight.current = true;
+    try {
+      const r = await resumePartnerSession();
+      if (r.ok) {
+        setHlsUrl(r.playlist_url);
+        setPlayHeaderName(r.play_header_name || "X-Play-Key");
+        setPlayHeaderValue(r.play_header_value || "");
+      } else {
+        // Sesi benar-benar sudah tidak valid → minta sesi baru dari awal
+        await loadStreamData();
+      }
+    } catch (e) {
+      console.error("resume error:", e);
+    } finally {
+      resumeInFlight.current = false;
+    }
+  }, [loadStreamData]);
 
   useEffect(() => {
     const init = async () => {
@@ -508,24 +465,24 @@ function LiveStream() {
     if (isVerified && !streamData && membershipChecked) loadStreamData();
   }, [isVerified, membershipChecked]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Resume otomatis saat halaman di-refresh (streamData sudah pernah ada dari load sebelumnya di sesi ini)
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && streamData) handleResume();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [streamData, handleResume]);
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages]);
-
-  useEffect(() => {
-    const onClickOutside = (e) => {
-      if (qualityMenuRef.current && !qualityMenuRef.current.contains(e.target)) setShowQualityMenu(false);
-    };
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, []);
 
   const goBack = () => navigate(-1);
   const handleLogout = () => {
     localStorage.removeItem("stream_access");
     setIsVerified(false); setShowVerification(true);
-    setStreamData(null); setHlsUrl(""); setAvailableStreams([]);
-    setStreamToken(""); setVerificationCode(""); setIdnLiveShow(null);
+    setStreamData(null); setHlsUrl(""); setPlayHeaderValue(""); setIdnLiveShow(null);
   };
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -620,10 +577,6 @@ function LiveStream() {
           <div className="ls-error-icon">⚠</div>
           <h2>Terjadi Kesalahan</h2>
           <p>{error}</p>
-          <details className="ls-error-details">
-            <summary>Detail Error</summary>
-            <pre>{error}</pre>
-          </details>
           <div className="ls-status-actions">
             <button onClick={() => { setError(""); loadStreamData(); }} className="ls-verify-btn">↺ Coba Lagi</button>
             <button onClick={goBack} className="ls-back-btn">← Kembali</button>
@@ -682,9 +635,11 @@ function LiveStream() {
             {hlsUrl ? (
               <HlsPlayer
                 src={hlsUrl}
+                playHeaderName={playHeaderName}
+                playHeaderValue={playHeaderValue}
                 title={idnLiveShow?.title || streamData.title}
-                token={streamToken}
                 onLevelInfo={setLevelInfo}
+                onNeedResume={handleResume}
               />
             ) : (
               <div className="ls-player-loading">
@@ -694,32 +649,13 @@ function LiveStream() {
             )}
           </div>
 
-          {/* ── Quality bar — layout baru, bukan overlay lagi ──────────── */}
-          {availableStreams.length > 0 && (
-            <div className="ls-quality-bar" ref={qualityMenuRef}>
-              <div className="ls-quality-current">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
-                <span>Kualitas: <strong>{activeQualityIdx === -1 ? `Auto (${levelInfo.name})` : availableStreams[activeQualityIdx]?.name}</strong></span>
-                {levelInfo.bandwidth && <span className="ls-quality-bw">{levelInfo.bandwidth}</span>}
-              </div>
-              <div className="ls-quality-options">
-                <button
-                  className={`ls-quality-pill${activeQualityIdx === -1 ? " active" : ""}`}
-                  onClick={() => handleSelectQuality(-1)}
-                >Auto</button>
-                {availableStreams.map((q, i) => (
-                  <button
-                    key={i}
-                    className={`ls-quality-pill${activeQualityIdx === i ? " active" : ""}`}
-                    onClick={() => handleSelectQuality(i)}
-                    title={q.bandwidth_label}
-                  >
-                    {q.name}
-                  </button>
-                ))}
-              </div>
+          <div className="ls-quality-bar">
+            <div className="ls-quality-current">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+              <span>Kualitas: <strong>Auto ({levelInfo.name})</strong>{maxResolution ? ` · maks ${maxResolution}p` : ""}</span>
+              {levelInfo.bandwidth && <span className="ls-quality-bw">{levelInfo.bandwidth}</span>}
             </div>
-          )}
+          </div>
 
           {idnLiveShow && (
             <div className="ls-show-banner">
