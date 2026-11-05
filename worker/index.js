@@ -26,8 +26,9 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_entries_at ON entries (at)`,
 ];
 
-const DEFAULT_SIGNER = "https://ap.harukaze48.my.id";
 const DEFAULT_PARTNER_ORIGIN = "https://st.oshigo.web.id";
+const PARTNER_API = "/api/public/partner/v1";
+const SITE_ORIGIN = "https://harukaze48.my.id"; // Origin/Referer yang dikirim ke OshiGO
 const PUBLIC_SETTING_KEYS = ["contact_url", "contact_label", "announcement", "price_show", "price_pass"];
 const VIEWER_TOKEN_TTL = 6 * 60 * 60 * 1000; // 6 jam
 const ADMIN_TOKEN_TTL = 12 * 60 * 60 * 1000;
@@ -214,6 +215,67 @@ function toPartnerOrigin(url, origin) {
   }
 }
 
+// ── signer partner OshiGO (langsung di Worker, tanpa host terpisah) ─────────
+//  subkey    = HMAC_SHA256(SECRET, "YYYY-MM-DD|KEY_ID|SERVER_IP") -> hex (hari UTC)
+//  base      = TS:NONCE:METHOD:PATH:SHA256(body)
+//  signature = HMAC_SHA256(bytes(subkey), base) -> hex
+async function hmacHex(keyBytes, msg) {
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(msg));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function partnerFetch(env, method, pathname, bodyObj) {
+  const base = (env.PARTNER_ORIGIN || DEFAULT_PARTNER_ORIGIN).replace(/\/$/, "");
+  const keyId = env.PARTNER_KEY_ID || "";
+  const secret = env.PARTNER_SECRET || "";
+  const serverIp = env.PARTNER_SERVER_IP || "";
+  const body = bodyObj === undefined ? "" : JSON.stringify(bodyObj); // ditandatangani & dikirim sama persis
+
+  const day = new Date().toISOString().slice(0, 10);
+  const subkeyHex = await hmacHex(enc.encode(secret), `${day}|${keyId}|${serverIp}`);
+  const ts = String(Math.floor(Date.now() / 1000));
+  const nonce = randomId(16);
+  const bodyHash = await sha256Hex(body);
+  const signature = await hmacHex(hexToBytes(subkeyHex), `${ts}:${nonce}:${method}:${pathname}:${bodyHash}`);
+
+  const res = await fetch(base + pathname, {
+    method,
+    headers: {
+      "X-Partner-Key": keyId,
+      "X-Timestamp": ts,
+      "X-Nonce": nonce,
+      "X-Signature": signature,
+      "content-type": "application/json",
+      origin: SITE_ORIGIN,
+      referer: `${SITE_ORIGIN}/`,
+    },
+    body: method === "GET" ? undefined : body,
+  });
+  return res.json();
+}
+
+const hexToBytes = (hex) => Uint8Array.from(hex.match(/.{2}/g) || [], (h) => parseInt(h, 16));
+
+// Slug situs (slug IDN Plus) → show_slug OshiGO. Cocok persis → fallback → satu-satunya entitled.
+let showsCache = { at: 0, data: null };
+async function resolvePartnerSlug(env, requested) {
+  const want = String(requested || "").trim().toLowerCase();
+  try {
+    if (!showsCache.data || Date.now() - showsCache.at > 60_000) {
+      const s = await partnerFetch(env, "GET", `${PARTNER_API}/shows`);
+      if (s?.ok) showsCache = { at: Date.now(), data: s };
+    }
+    const list = showsCache.data?.shows || [];
+    const hit = list.find((x) => [x.show_slug, x.slug].map((v) => String(v || "").toLowerCase()).includes(want));
+    if (hit) return hit.show_slug || hit.slug;
+    if (env.SHOW_SLUG_FALLBACK) return env.SHOW_SLUG_FALLBACK;
+    const entitled = list.filter((x) => x.entitled);
+    if (entitled.length === 1) return entitled[0].show_slug || entitled[0].slug;
+  } catch { /* pakai slug apa adanya */ }
+  return env.SHOW_SLUG_FALLBACK || want;
+}
+
 async function streamSession(request, env) {
   const { token } = await readJson(request);
   const p = await verifyToken(env, token);
@@ -224,22 +286,26 @@ async function streamSession(request, env) {
   const dev = await env.DB.prepare("SELECT 1 FROM grant_devices WHERE grant_id = ? AND device_id = ?").bind(g.id, p.d).first();
   if (!dev) return fail("DEVICE_RESET", "Perangkat ini sudah dilepas oleh admin. Masukkan email lagi.", 401);
 
-  const signer = (env.PARTNER_SIGNER_BASE || DEFAULT_SIGNER).replace(/\/$/, "");
-  const origin = request.headers.get("origin") || new URL(request.url).origin;
+  if (!env.PARTNER_KEY_ID || !env.PARTNER_SECRET) {
+    return fail("SIGNER_NOT_CONFIGURED", "Kredensial partner (PARTNER_KEY_ID/PARTNER_SECRET) belum dipasang.", 500);
+  }
+
   let data;
   try {
-    const res = await fetch(`${signer}/session`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin },
-      body: JSON.stringify({ show_slug: p.s, viewer_id: (await sha256Hex(p.e)).slice(0, 32), ttl: 120 }),
+    const slug = await resolvePartnerSlug(env, p.s);
+    data = await partnerFetch(env, "POST", `${PARTNER_API}/session`, {
+      show_slug: slug,
+      viewer_id: (await sha256Hex(p.e)).slice(0, 32),
+      ttl: 120,
     });
-    data = await res.json();
   } catch {
     return fail("SIGNER_DOWN", "Server stream tidak merespon, coba lagi sebentar.", 502);
   }
   if (!data || !data.ok) return json({ ok: false, code: data?.code || "SIGNER_ERROR", message: data?.message }, 502);
 
   const partnerOrigin = env.PARTNER_ORIGIN || DEFAULT_PARTNER_ORIGIN;
+  // playback_url (dan playlist/resume nanti di browser) menunjuk ke oshigo.web.id
+  // yang sudah di-takedown → arahkan ke st.oshigo.web.id.
   return json({ ...data, playback_url: toPartnerOrigin(data.playback_url, partnerOrigin) });
 }
 

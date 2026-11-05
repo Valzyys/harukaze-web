@@ -6,8 +6,16 @@ ruang nonton.
 
 - Frontend: React + Vite, animasi GSAP (ScrollTrigger, SplitText)
 - Backend: Cloudflare Worker (`worker/index.js`) + **D1** sebagai storage
-- Stream: sesi partner lewat signer, playback/resume ke `https://st.oshigo.web.id/api/partner/...`
+- Stream: sesi partner OshiGO **ditandatangani langsung di Worker** (tanpa host signer terpisah),
+  playback/resume ke `https://st.oshigo.web.id/api/partner/...`
 - Jadwal show: IDN Live Plus via JKT48Connect (tidak diubah)
+
+> Worker menandatangani request OshiGO (subkey harian HMAC), memaksa `Origin`/`Referer` ke
+> `harukaze48.my.id`, dan memanggil `st.oshigo.web.id`. Isi secret `PARTNER_KEY_ID` &
+> `PARTNER_SECRET`. **Catatan IP:** OshiGO mengikutkan IP pemanggil dalam tanda tangan. IP keluar
+> Cloudflare Workers berganti-ganti — pastikan rentang IP Workers (atau IP yang kamu set di
+> `PARTNER_SERVER_IP`) sudah di-whitelist di dashboard OshiGO, kalau tidak balasannya
+> `SIGNATURE_REJECTED`.
 
 ## Deploy (sekali jalan)
 
@@ -28,15 +36,20 @@ setelah 5 kali gagal.
 
 | Nama | Jenis | Default | Keterangan |
 | --- | --- | --- | --- |
-| `PARTNER_ORIGIN` | var | `https://st.oshigo.web.id` | Origin partner untuk playback & resume |
-| `PARTNER_SIGNER_BASE` | var | `https://ap.harukaze48.my.id` | Worker signer HMAC (`POST /session`) |
+| `PARTNER_ORIGIN` | var | `https://st.oshigo.web.id` | Host partner OshiGO (signing, playback & resume) |
+| `PARTNER_KEY_ID` | secret | — | Key id partner OshiGO (wajib untuk stream) |
+| `PARTNER_SECRET` | secret | — | Secret partner OshiGO (wajib untuk stream) |
+| `PARTNER_SERVER_IP` | var | — | IP yang ikut ditandatangani; samakan dengan yang di-whitelist OshiGO |
+| `SHOW_SLUG_FALLBACK` | var | — | show_slug OshiGO bila slug situs tak cocok (opsional) |
 | `ADMIN_USERNAME` | var/secret | `kaze` | Username admin |
 | `ADMIN_PASSWORD` | secret | `haru` | Password admin default (dipakai selama belum diganti dari panel) |
 | `APP_SECRET` | secret | dibuat otomatis di D1 | Kunci tanda tangan token |
 | `VITE_PARTNER_ORIGIN` | build env | `https://st.oshigo.web.id` | Origin partner di sisi browser |
 
 ```bash
-npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put PARTNER_KEY_ID
+npx wrangler secret put PARTNER_SECRET
+# opsional: npx wrangler secret put ADMIN_PASSWORD
 ```
 
 ## Alur akses
@@ -47,7 +60,7 @@ npx wrangler secret put ADMIN_PASSWORD
    - **Per durasi** — semua show selama 1/3/7/14/30 hari atau jumlah hari kustom.
    - Batas perangkat per email (default 1). Admin bisa reset perangkat, perpanjang, cabut, hapus.
 3. Pembeli membuka `/live/<slug>` → ketik email → Worker memeriksa D1, mengikat perangkat, dan
-   memberi token bertanda tangan (maks. 6 jam) → Worker meminta sesi ke signer → browser
+   memberi token bertanda tangan (maks. 6 jam) → Worker menandatangani & meminta sesi ke OshiGO → browser
    menukar `playback_url` di `st.oshigo.web.id`.
 
 ## Pengembangan lokal
@@ -63,6 +76,6 @@ npm run dev                           # Vite di :5173, /api diproxy ke :8787
 worker/index.js        API (/api/*) + D1 + penyajian SPA
 migrations/            skema D1 (opsional, Worker juga membuatnya otomatis)
 src/pages/             Home, Schedule (jadwal & tiket), Access (cek email), Room (ruang nonton), Admin
-src/components/        Nav, Footer, Ticket, Countdown, Marquee, HlsPlayer, Chat
+src/components/        Nav, Footer, Ticket, Countdown, Marquee, Player (resolusi), Chat
 src/styles/            base (token visual), shell, home, pages, room, admin
 ```

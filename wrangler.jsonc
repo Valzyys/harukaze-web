@@ -21,9 +21,12 @@
     }
   ],
   "vars": {
-    "PARTNER_ORIGIN": "https://st.oshigo.web.id",
-    "PARTNER_SIGNER_BASE": "https://ap.harukaze48.my.id"
+    "PARTNER_ORIGIN": "https://st.oshigo.web.id"
+    // Opsional: PARTNER_SERVER_IP (IP yang di-whitelist OshiGO), SHOW_SLUG_FALLBACK
   }
   // Login admin default: kaze / haru (bisa ditimpa: ADMIN_USERNAME, ADMIN_PASSWORD)
-  // Opsional (secret): APP_SECRET
+  // Secret stream (wajib): PARTNER_KEY_ID, PARTNER_SECRET  — signer sudah di dalam Worker ini.
+  //   npx wrangler secret put PARTNER_KEY_ID
+  //   npx wrangler secret put PARTNER_SECRET
+  // Opsional: APP_SECRET
 }
