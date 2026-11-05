@@ -26,57 +26,49 @@ const toLocalInput = (ts) => {
   return d.toISOString().slice(0, 16);
 };
 
-// ── login / setup ─────────────────────────────────────────────────────────
+// ── login ─────────────────────────────────────────────────────────────────
 function AdminAuth({ onToken }) {
-  const [needsSetup, setNeedsSetup] = useState(null);
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const root = useRef(null);
 
-  useEffect(() => {
-    api("/admin/status").then((r) => setNeedsSetup(r.ok ? r.needs_setup : false));
-  }, []);
-
   useGSAP(() => {
-    if (needsSetup === null) return;
     gsap.from(".auth > *", { y: 30, opacity: 0, stagger: 0.08 });
-  }, { scope: root, dependencies: [needsSetup] });
+  }, { scope: root });
 
   const submit = async (e) => {
     e.preventDefault();
     setError("");
-    if (needsSetup && password !== confirm) return setError("Konfirmasi password tidak sama.");
     setBusy(true);
-    const r = await api(needsSetup ? "/admin/setup" : "/admin/login", { method: "POST", body: { password } });
+    const r = await api("/admin/login", { method: "POST", body: { username, password } });
     setBusy(false);
-    if (!r.ok) return setError(r.message || "Gagal masuk.");
+    if (!r.ok) {
+      setError(r.message || "Gagal masuk.");
+      gsap.fromTo(".auth", { x: -10 }, { x: 0, duration: 0.5, ease: "elastic.out(1, 0.3)" });
+      return;
+    }
     onToken(r.token);
   };
 
   return (
     <div className="admin-auth" ref={root}>
-      {needsSetup !== null && (
-        <form className="auth" onSubmit={submit}>
-          <Link to="/" className="auth__brand">Harukaze<em>48</em></Link>
-          <p className="eyebrow">{needsSetup ? "Pemasangan pertama" : "Ruang kontrol"}</p>
-          <h1 className="display">{needsSetup ? "Buat kunci ruang kontrol." : "Selamat datang kembali."}</h1>
-          {needsSetup && <p className="auth__lede">Database sudah siap. Tentukan password admin — hanya diminta sekali.</p>}
-          <div className="field">
-            <label htmlFor="adm-pw">Password admin</label>
-            <input id="adm-pw" className="input" type="password" autoComplete={needsSetup ? "new-password" : "current-password"} required minLength={needsSetup ? 8 : 1} value={password} onChange={(e) => setPassword(e.target.value)} />
-          </div>
-          {needsSetup && (
-            <div className="field">
-              <label htmlFor="adm-pw2">Ulangi password</label>
-              <input id="adm-pw2" className="input" type="password" autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
-            </div>
-          )}
-          {error && <p className="note-error">{error}</p>}
-          <button className="btn btn--red" disabled={busy}>{busy ? <span className="spinner" /> : needsSetup ? "Simpan & masuk" : "Masuk"}</button>
-        </form>
-      )}
+      <form className="auth" onSubmit={submit}>
+        <Link to="/" className="auth__brand">Harukaze<em>48</em></Link>
+        <p className="eyebrow">Ruang kontrol</p>
+        <h1 className="display">Selamat datang kembali.</h1>
+        <div className="field">
+          <label htmlFor="adm-user">Username</label>
+          <input id="adm-user" className="input" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={username} onChange={(e) => setUsername(e.target.value)} />
+        </div>
+        <div className="field">
+          <label htmlFor="adm-pw">Password</label>
+          <input id="adm-pw" className="input" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        </div>
+        {error && <p className="note-error">{error}</p>}
+        <button className="btn btn--red" disabled={busy}>{busy ? <span className="spinner" /> : "Masuk"}</button>
+      </form>
     </div>
   );
 }
@@ -322,13 +314,14 @@ function GrantList({ token, grants, loading, q, setQ, status, setStatus, reload,
 // ── pengaturan ────────────────────────────────────────────────────────────
 function Settings({ token, toast }) {
   const [form, setForm] = useState(null);
-  const [envPw, setEnvPw] = useState(false);
+  const [user, setUser] = useState("");
   const [pw, setPw] = useState("");
+  const [cur, setCur] = useState("");
   useEffect(() => {
     api("/admin/settings", { token }).then((r) => {
       if (r.ok) {
         setForm({ contact_url: "", contact_label: "", announcement: "", price_show: "", price_pass: "", ...r.data });
-        setEnvPw(r.password_managed_by_env);
+        setUser(r.username || "");
       }
     });
   }, [token]);
@@ -341,9 +334,9 @@ function Settings({ token, toast }) {
   };
   const changePw = async (e) => {
     e.preventDefault();
-    const r = await api("/admin/password", { method: "PUT", token, body: { password: pw } });
+    const r = await api("/admin/password", { method: "PUT", token, body: { current: cur, password: pw } });
     toast(r.ok ? "Password diganti" : r.message || "Gagal", !r.ok);
-    if (r.ok) setPw("");
+    if (r.ok) { setPw(""); setCur(""); }
   };
   return (
     <div className="settings">
@@ -360,14 +353,10 @@ function Settings({ token, toast }) {
       </form>
       <form className="panel" onSubmit={changePw}>
         <header className="panel__head"><h2 className="display">Password admin</h2></header>
-        {envPw ? (
-          <p className="muted">Password diatur lewat secret <code>ADMIN_PASSWORD</code> di Cloudflare.</p>
-        ) : (
-          <>
-            <div className="field"><label htmlFor="s-pw">Password baru (min. 8)</label><input id="s-pw" className="input" type="password" minLength={8} required value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" /></div>
-            <button className="btn">Ganti password</button>
-          </>
-        )}
+        <p className="muted">Username: <b className="mono">{user}</b></p>
+        <div className="field"><label htmlFor="s-pw0">Password lama</label><input id="s-pw0" className="input" type="password" required value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" /></div>
+        <div className="field"><label htmlFor="s-pw">Password baru (min. 4)</label><input id="s-pw" className="input" type="password" minLength={4} required value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" /></div>
+        <button className="btn">Ganti password</button>
       </form>
     </div>
   );

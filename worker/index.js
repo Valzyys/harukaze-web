@@ -244,9 +244,22 @@ async function streamSession(request, env) {
 }
 
 // ── admin ─────────────────────────────────────────────────────────────────
-async function adminState(env) {
-  if (env.ADMIN_PASSWORD) return "env";
-  return (await getSetting(env.DB, "admin_hash")) ? "db" : "setup";
+// Kredensial default: kaze / haru. Bisa ditimpa lewat env ADMIN_USERNAME / ADMIN_PASSWORD,
+// dan password bisa diganti dari panel admin (disimpan sebagai hash di D1).
+const DEFAULT_ADMIN_USER = "kaze";
+const DEFAULT_ADMIN_PASS = "haru";
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
+
+const adminUser = (env) => (env.ADMIN_USERNAME || DEFAULT_ADMIN_USER).trim().toLowerCase();
+
+async function checkAdminPassword(env, password) {
+  const stored = await getSetting(env.DB, "admin_pass_hash");
+  if (stored) {
+    const [salt] = stored.split(":");
+    return timingSafeEqual(await hashPassword(password, salt), stored);
+  }
+  return timingSafeEqual(password, env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASS);
 }
 
 async function requireAdmin(request, env) {
@@ -255,32 +268,28 @@ async function requireAdmin(request, env) {
   return p && p.t === "a" ? p : null;
 }
 
-async function adminStatus(env) {
-  return json({ ok: true, needs_setup: (await adminState(env)) === "setup" });
-}
-
-async function adminSetup(request, env) {
-  if ((await adminState(env)) !== "setup") return fail("ALREADY_SET", "Admin sudah dikonfigurasi.", 409);
-  const { password } = await readJson(request);
-  if (!password || String(password).length < 8) return fail("WEAK_PASSWORD", "Password minimal 8 karakter.");
-  const h = await hashPassword(String(password));
-  const r = await env.DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_hash', ?)").bind(h).run();
-  if (!r.meta.changes) return fail("ALREADY_SET", "Admin sudah dikonfigurasi.", 409);
-  return json({ ok: true, token: await signToken(env, { t: "a", exp: Date.now() + ADMIN_TOKEN_TTL }) });
-}
-
 async function adminLogin(request, env) {
-  const { password } = await readJson(request);
-  const state = await adminState(env);
-  let ok = false;
-  if (state === "env") ok = timingSafeEqual(String(password || ""), env.ADMIN_PASSWORD);
-  else if (state === "db") {
-    const stored = await getSetting(env.DB, "admin_hash");
-    const [salt] = stored.split(":");
-    ok = timingSafeEqual(await hashPassword(String(password || ""), salt), stored);
-  } else return fail("NEEDS_SETUP", "Admin belum dibuat.", 409);
-  if (!ok) return fail("BAD_PASSWORD", "Password salah.", 401);
-  return json({ ok: true, token: await signToken(env, { t: "a", exp: Date.now() + ADMIN_TOKEN_TTL }) });
+  const { username, password } = await readJson(request);
+  const ip = request.headers.get("cf-connecting-ip") || "local";
+  const key = `login_fail:${ip}`;
+  const now = Date.now();
+
+  // Kunci sementara setelah beberapa kali gagal (password default pendek, jadi wajib).
+  const rec = JSON.parse((await getSetting(env.DB, key)) || "null");
+  if (rec && rec.n >= LOGIN_MAX_FAILS && now - rec.t < LOGIN_LOCK_MS) {
+    const mins = Math.ceil((LOGIN_LOCK_MS - (now - rec.t)) / 60000);
+    return fail("LOCKED", `Terlalu banyak percobaan. Coba lagi dalam ${mins} menit.`, 429);
+  }
+
+  const userOk = timingSafeEqual(String(username || "").trim().toLowerCase(), adminUser(env));
+  const passOk = await checkAdminPassword(env, String(password || ""));
+  if (!userOk || !passOk) {
+    const fresh = !rec || now - rec.t >= LOGIN_LOCK_MS;
+    await setSetting(env.DB, key, JSON.stringify({ n: fresh ? 1 : rec.n + 1, t: fresh ? now : rec.t }));
+    return fail("BAD_LOGIN", "Username atau password salah.", 401);
+  }
+  if (rec) await env.DB.prepare("DELETE FROM settings WHERE key = ?").bind(key).run();
+  return json({ ok: true, token: await signToken(env, { t: "a", exp: now + ADMIN_TOKEN_TTL }) });
 }
 
 async function adminStats(env) {
@@ -389,10 +398,10 @@ async function adminSaveSettings(request, env) {
 }
 
 async function adminChangePassword(request, env) {
-  if ((await adminState(env)) === "env") return fail("ENV_MANAGED", "Password diatur lewat variabel ADMIN_PASSWORD.", 409);
-  const { password } = await readJson(request);
-  if (!password || String(password).length < 8) return fail("WEAK_PASSWORD", "Password minimal 8 karakter.");
-  await setSetting(env.DB, "admin_hash", await hashPassword(String(password)));
+  const { current, password } = await readJson(request);
+  if (!(await checkAdminPassword(env, String(current || "")))) return fail("BAD_PASSWORD", "Password lama salah.", 401);
+  if (!password || String(password).length < 4) return fail("WEAK_PASSWORD", "Password baru minimal 4 karakter.");
+  await setSetting(env.DB, "admin_pass_hash", await hashPassword(String(password)));
   return json({ ok: true });
 }
 
@@ -408,8 +417,6 @@ async function handleApi(request, env, url) {
   if (pathname === "/api/access/enter" && m === "POST") return accessEnter(request, env);
   if (pathname === "/api/stream/session" && m === "POST") return streamSession(request, env);
 
-  if (pathname === "/api/admin/status" && m === "GET") return adminStatus(env);
-  if (pathname === "/api/admin/setup" && m === "POST") return adminSetup(request, env);
   if (pathname === "/api/admin/login" && m === "POST") return adminLogin(request, env);
 
   if (pathname.startsWith("/api/admin/")) {
@@ -424,7 +431,7 @@ async function handleApi(request, env, url) {
       const { results } = await env.DB.prepare("SELECT key, value FROM settings").all();
       const out = {};
       for (const r of results) if (PUBLIC_SETTING_KEYS.includes(r.key)) out[r.key] = r.value;
-      return json({ ok: true, data: out, password_managed_by_env: Boolean(env.ADMIN_PASSWORD) });
+      return json({ ok: true, data: out, username: adminUser(env) });
     }
     if (pathname === "/api/admin/settings" && m === "PUT") return adminSaveSettings(request, env);
     if (pathname === "/api/admin/password" && m === "PUT") return adminChangePassword(request, env);

@@ -20,7 +20,9 @@ npm run deploy
 `npm run deploy` = `vite build && wrangler deploy`. Pada deploy pertama, wrangler **membuat
 database D1 `harukaze-db` dan memasang binding `DB` secara otomatis** (tidak perlu
 `database_id`). Tabel dibuat sendiri oleh Worker saat request pertama — tidak ada migrasi
-manual. Setelah itu buka `/admin` dan buat password admin (hanya diminta sekali).
+manual. Setelah itu buka `/admin` dan login dengan **username `kaze`, password `haru`**.
+Ganti password lewat **Admin → Pengaturan** (disimpan sebagai hash di D1). Login dikunci 15 menit
+setelah 5 kali gagal.
 
 ### Variabel (opsional)
 
@@ -28,7 +30,8 @@ manual. Setelah itu buka `/admin` dan buat password admin (hanya diminta sekali)
 | --- | --- | --- | --- |
 | `PARTNER_ORIGIN` | var | `https://st.oshigo.web.id` | Origin partner untuk playback & resume |
 | `PARTNER_SIGNER_BASE` | var | `https://ap.harukaze48.my.id` | Worker signer HMAC (`POST /session`) |
-| `ADMIN_PASSWORD` | secret | — | Kalau diisi, menggantikan password admin di D1 |
+| `ADMIN_USERNAME` | var/secret | `kaze` | Username admin |
+| `ADMIN_PASSWORD` | secret | `haru` | Password admin default (dipakai selama belum diganti dari panel) |
 | `APP_SECRET` | secret | dibuat otomatis di D1 | Kunci tanda tangan token |
 | `VITE_PARTNER_ORIGIN` | build env | `https://st.oshigo.web.id` | Origin partner di sisi browser |
 

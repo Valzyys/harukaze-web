@@ -24,6 +24,6 @@
     "PARTNER_ORIGIN": "https://st.oshigo.web.id",
     "PARTNER_SIGNER_BASE": "https://ap.harukaze48.my.id"
   }
-  // Opsional (secret): ADMIN_PASSWORD, APP_SECRET
-  //   npx wrangler secret put ADMIN_PASSWORD
+  // Login admin default: kaze / haru (bisa ditimpa: ADMIN_USERNAME, ADMIN_PASSWORD)
+  // Opsional (secret): APP_SECRET
 }
