@@ -1,0 +1,132 @@
+/* ── route wipe ─────────────────────────────────────────── */
+.route-wipe {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--red);
+  pointer-events: none;
+  transform: scaleY(0);
+}
+
+/* ── nav ────────────────────────────────────────────────── */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+.nav--scrolled {
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 1px 0 var(--line);
+}
+.nav__row { display: flex; align-items: center; gap: 28px; height: 72px; }
+.nav__brand { display: flex; align-items: baseline; gap: 10px; text-decoration: none; margin-right: auto; }
+.nav__kanji { font-family: var(--f-jp); font-size: 22px; color: var(--red); line-height: 1; }
+.nav__word { font-family: var(--f-display); font-size: 24px; letter-spacing: -0.02em; }
+.nav__word em { font-style: normal; color: var(--red); }
+.nav__links { display: flex; gap: 26px; }
+.nav__links a {
+  position: relative;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 15px;
+  color: var(--ink-2);
+  padding: 6px 0;
+}
+.nav__links a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.5px;
+  background: var(--red);
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 0.4s ease;
+}
+.nav__links a:hover::after,
+.nav__links a.active::after { transform: scaleX(1); transform-origin: left; }
+.nav__links a.active { color: var(--ink); }
+.nav__burger { display: none; }
+.nav__sheet { display: none; }
+
+@media (max-width: 820px) {
+  .nav__links, .nav__cta { display: none; }
+  .nav__burger {
+    display: grid;
+    place-content: center;
+    gap: 6px;
+    width: 44px;
+    height: 44px;
+    border: 1.5px solid var(--ink);
+    border-radius: 50%;
+    background: transparent;
+    cursor: pointer;
+  }
+  .nav__burger span { display: block; width: 18px; height: 1.5px; background: var(--ink); transition: transform 0.35s ease; }
+  .nav__burger.is-open span:first-child { transform: translateY(3.75px) rotate(45deg); }
+  .nav__burger.is-open span:last-child { transform: translateY(-3.75px) rotate(-45deg); }
+  .nav__sheet {
+    position: fixed;
+    inset: 72px 0 auto 0;
+    height: calc(100dvh - 72px);
+    flex-direction: column;
+    gap: 4px;
+    padding: 24px var(--gutter);
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .nav__sheet a {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    padding: 14px 0;
+    border-bottom: 1px solid #ffffff1f;
+    font-family: var(--f-display);
+    font-size: 40px;
+    text-decoration: none;
+  }
+  .nav__sheet a small { font-size: 12px; color: var(--red); }
+  .nav__sheet a.active { color: #ff8a8f; }
+}
+
+/* ── footer ─────────────────────────────────────────────── */
+.foot { margin-top: 120px; background: var(--ink); color: var(--paper); padding-top: 56px; overflow: hidden; }
+.foot .eyebrow { color: #a7998a; margin: 0 0 10px; }
+.foot__grid { display: grid; grid-template-columns: auto 1fr; gap: 48px; align-items: end; }
+.foot__big {
+  font-family: var(--f-jp);
+  font-size: clamp(120px, 20vw, 260px);
+  line-height: 0.8;
+  color: var(--red);
+  writing-mode: vertical-rl;
+}
+.foot__cols { display: grid; grid-template-columns: 1.4fr 1fr 1.2fr; gap: 32px; padding-bottom: 12px; }
+.foot__lede { font-family: var(--f-display); font-size: 26px; line-height: 1.15; margin: 0; }
+.foot ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.foot a { text-decoration: none; }
+.foot__small { color: #a7998a; font-size: 14px; margin: 0; }
+.foot__base {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 40px;
+  padding-top: 18px;
+  padding-bottom: 22px;
+  border-top: 1px solid #ffffff1a;
+  font-size: 12px;
+  color: #a7998a;
+}
+@media (max-width: 820px) {
+  .foot__grid { grid-template-columns: 1fr; }
+  .foot__big { writing-mode: horizontal-tb; font-size: 120px; }
+  .foot__cols { grid-template-columns: 1fr; }
+  .foot__base { flex-direction: column; }
+}
+
+/* ── 404 ────────────────────────────────────────────────── */
+.notfound { min-height: 60vh; display: grid; align-content: center; justify-items: start; gap: 18px; padding-top: 60px; }
+.notfound h1 { font-size: clamp(56px, 10vw, 120px); }
+.route-loading { min-height: 100dvh; }

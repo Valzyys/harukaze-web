@@ -1,97 +1,74 @@
-import { useEffect, useState, useRef, useCallback } from "react";
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { lazy, Suspense, useRef } from "react";
+import { BrowserRouter, Routes, Route, useLocation, Link } from "react-router-dom";
+import { gsap, useGSAP, ScrollTrigger, prefersReducedMotion } from "./lib/gsap";
+import Nav from "./components/Nav";
+import Footer from "./components/Footer";
 import Home from "./pages/Home";
-import ProductDetail from "./pages/ProductDetail";
-import PurchaseForm from "./pages/PurchaseForm";
-import Checkout from "./pages/Checkout";
-import Cart from "./pages/Cart";
-import Wishlist from "./pages/Wishlist";
-import Success from "./pages/Success";
-import Order from "./pages/Order";
-import MyOrders from "./pages/PesananSaya";
-import Register from "./pages/Register";
-import Login from "./pages/Login";
-import ProfilePage from "./pages/Profile";
-import Header from "./components/Header";
-import LiveStream from "./pages/live";
-import Verify from "./pages/verify";
-import Replay from "./pages/replay";
-import AdminLive from "./pages/admin";
-import BuyShowAccess from "./pages/buy-show";
-import BuyMembership from "./pages/membership";
+import Schedule from "./pages/Schedule";
+import Access from "./pages/Access";
+// Halaman berat (hls.js, supabase) dimuat terpisah.
+const Room = lazy(() => import("./pages/Room"));
+const Admin = lazy(() => import("./pages/Admin"));
 
-// ─────────────────────────────────────────────────────────────
-//  APP
-// ─────────────────────────────────────────────────────────────
-function App() {
- // const devToolsOpen = useStrictDevToolsDetection();
+function Shell() {
+  const location = useLocation();
+  const wipe = useRef(null);
+  const immersive = location.pathname.startsWith("/live/") || location.pathname.startsWith("/admin");
 
-//  if (devToolsOpen) return <DevToolsBlocker />;
+  // Tirai merah tipis menyapu layar tiap pindah halaman.
+  useGSAP(
+    () => {
+      window.scrollTo(0, 0);
+      ScrollTrigger.refresh();
+      if (prefersReducedMotion()) return;
+      gsap.fromTo(
+        wipe.current,
+        { scaleY: 1, transformOrigin: "top" },
+        { scaleY: 0, duration: 0.7, ease: "expo.inOut", delay: 0.05 }
+      );
+    },
+    { dependencies: [location.pathname] }
+  );
 
   return (
-    <Router>
-      <Header />
+    <>
+      <div className="route-wipe" ref={wipe} aria-hidden="true" />
+      {!immersive && <Nav />}
       <main>
+        <Suspense fallback={<div className="route-loading" />}>
         <Routes>
-          <Route path="/"                   element={<Home />} />
-          <Route path="/keranjang"          element={<Cart />} />
-          <Route path="/product/:id"        element={<ProductDetail />} />
-          <Route path="/purchase/:id"       element={<PurchaseForm />} />
-          <Route path="/checkout"           element={<Checkout />} />
-          <Route path="/wish"               element={<Wishlist />} />
-          <Route path="/success"            element={<Success />} />
-          <Route path="/order"              element={<Order />} />
-          <Route path="/myorder"            element={<MyOrders />} />
-          <Route path="/register"           element={<Register />} />
-          <Route path="/login"              element={<Login />} />
-          <Route path="/profile"            element={<ProfilePage />} />
-          <Route path="/live/:playbackId"   element={<LiveStream />} />
-          <Route path="/verify"             element={<Verify />} />
-          <Route path="/replay/:playbackId" element={<Replay />} /> 
-          <Route path="/buyshow" element={<BuyShowAccess />} /> 
-          <Route path="/membership" element={<BuyMembership />} />
-          <Route path="/admin" element={<AdminLive />} />
-          <Route path="*"                   element={<NotFound />} />
+          <Route path="/" element={<Home />} />
+          <Route path="/jadwal" element={<Schedule />} />
+          <Route path="/akses" element={<Access />} />
+          <Route path="/live/:slug" element={<Room />} />
+          <Route path="/admin" element={<Admin />} />
+          {/* tautan lama tetap jalan */}
+          <Route path="/buyshow" element={<Schedule />} />
+          <Route path="/membership" element={<Schedule />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
+        </Suspense>
       </main>
-    </Router>
+      {!immersive && <Footer />}
+    </>
   );
 }
 
-// ─────────────────────────────────────────────────────────────
-//  404
-// ─────────────────────────────────────────────────────────────
 function NotFound() {
   return (
-    <div style={{
-      textAlign:      "center",
-      padding:        "50px 20px",
-      minHeight:      "60vh",
-      display:        "flex",
-      flexDirection:  "column",
-      justifyContent: "center",
-      alignItems:     "center",
-    }}>
-      <h1 style={{ fontSize: "48px", color: "#e74c3c", marginBottom: "20px" }}>404</h1>
-      <h2 style={{ fontSize: "24px", marginBottom: "20px" }}>Halaman Tidak Ditemukan</h2>
-      <p style={{ fontSize: "16px", color: "#666", marginBottom: "30px" }}>
-        Maaf, halaman yang Anda cari tidak dapat ditemukan.
-      </p>
-      <a
-        href="/"
-        style={{
-          backgroundColor: "#3498db",
-          color:           "white",
-          padding:         "12px 24px",
-          textDecoration:  "none",
-          borderRadius:    "4px",
-          fontSize:        "16px",
-        }}
-      >
-        Kembali ke Beranda
-      </a>
-    </div>
+    <section className="wrap notfound">
+      <p className="eyebrow">Kursi 404 · Baris tidak ditemukan</p>
+      <h1 className="display">Kursi ini kosong.</h1>
+      <p>Halaman yang kamu cari tidak ada di denah gedung kami.</p>
+      <Link to="/" className="btn">Kembali ke lobi <span className="arrow">→</span></Link>
+    </section>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Shell />
+    </BrowserRouter>
+  );
+}

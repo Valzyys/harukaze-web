@@ -1,0 +1,313 @@
+/* Ruang nonton — "lampu gedung dimatikan". */
+
+/* ── tirai beludru ──────────────────────────────────────── */
+.curtain__l,
+.curtain__r {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 50.5vw;
+  z-index: 30;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, #00000000 0 26px, #0000003d 34px, #00000000 52px),
+    linear-gradient(180deg, #a3141f, #6e0c14 85%, #4a070d);
+  box-shadow: inset 0 -60px 80px -40px #000a;
+}
+.curtain__l { left: 0; border-right: 1px solid #00000066; }
+.curtain__r { right: 0; border-left: 1px solid #00000066; }
+
+/* ── gerbang ────────────────────────────────────────────── */
+.gate-page {
+  position: relative;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 80px 16px;
+  background: radial-gradient(ellipse 60% 50% at 50% 35%, #2a1d16 0%, var(--house) 70%);
+  color: var(--house-ink);
+  overflow: hidden;
+}
+.gate-page__home {
+  position: absolute;
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  font-family: var(--f-display);
+  font-size: 20px;
+  text-decoration: none;
+  color: var(--house-ink);
+}
+.gate-page__home em, .room__brand em { font-style: normal; color: #ff5a63; }
+
+.gatecard {
+  --cut: calc(100% - 92px);
+  --hole: 13px;
+  position: relative;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: 1fr 92px;
+  width: min(560px, 100%);
+  background: var(--paper);
+  background-image: var(--grain);
+  color: var(--ink);
+  border-radius: 16px;
+  box-shadow: 0 40px 80px -30px #000;
+}
+.gatecard__main { display: grid; gap: 16px; padding: 30px; border-right: 2px dashed var(--line); }
+.gatecard__main .eyebrow { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--red); }
+.gatecard h1 { font-size: clamp(36px, 6vw, 54px); text-transform: capitalize; }
+.gatecard__when { margin: -6px 0 6px; font-size: 13px; color: var(--ink-3); text-transform: capitalize; }
+.gatecard__go { width: 100%; }
+.gatecard__help { margin: 0; font-size: 14px; color: var(--ink-3); }
+.gatecard__help .link-u { color: var(--ink); font-weight: 600; }
+.gatecard__stub {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 0;
+  background: var(--red);
+  color: #fff;
+  border-radius: 0 16px 16px 0;
+}
+.gatecard__stub .mono { writing-mode: vertical-rl; font-size: 12px; letter-spacing: 0.35em; }
+.gatecard__kanji { font-family: var(--f-jp); font-size: 48px; line-height: 1; }
+
+/* ── ruang ──────────────────────────────────────────────── */
+.room {
+  min-height: 100dvh;
+  background:
+    radial-gradient(ellipse 70% 45% at 38% 0%, #3a1712 0%, transparent 70%),
+    var(--house);
+  color: var(--house-ink);
+}
+.room__bar {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 60px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--house-line);
+  background: color-mix(in srgb, var(--house) 86%, transparent);
+  backdrop-filter: blur(10px);
+}
+.room__brand { font-family: var(--f-display); font-size: 20px; text-decoration: none; }
+.room__title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; font-weight: 600; }
+.room__title > span:last-child { text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room__live { display: inline-flex; align-items: center; gap: 8px; padding: 3px 9px; border: 1px solid #ff5a63; border-radius: 4px; color: #ff5a63; font-size: 11px; letter-spacing: 0.12em; }
+.room__actions { display: flex; align-items: center; gap: 12px; }
+.room__viewers { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--house-mute); }
+.room__viewers i { width: 6px; height: 6px; border-radius: 50%; background: #9fd3a8; box-shadow: 0 0 0 3px #9fd3a826; }
+.room__btn {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--red);
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.25s ease;
+}
+.room__btn:hover { background: var(--red-deep); }
+.room__btn--ghost { background: transparent; border-color: var(--house-line); color: var(--house-ink); }
+.room__btn--ghost:hover { background: var(--house-3); }
+
+.room__grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: calc(100dvh - 60px); }
+.room__stage { padding: 22px 28px 0; min-width: 0; }
+
+/* panggung: valance beludru di atas layar + pantulan cahaya di lantai */
+.stage { position: relative; max-width: 1280px; margin: 0 auto; }
+.stage__valance {
+  position: relative;
+  z-index: 3;
+  height: 22px;
+  margin: 0 -10px -6px;
+  border-radius: 6px 6px 0 0;
+  background:
+    radial-gradient(circle at 50% 0, #0000 0 12px, #7d0f18 13px) 0 100% / 34px 12px repeat-x,
+    linear-gradient(180deg, #a3141f, #7d0f18);
+  -webkit-mask: radial-gradient(circle 9px at 17px 100%, #0000 98%, #000) 0 0 / 34px 100% repeat-x;
+  mask: radial-gradient(circle 9px at 17px 100%, #0000 98%, #000) 0 0 / 34px 100% repeat-x;
+  box-shadow: 0 6px 18px -6px #000;
+}
+.stage__screen {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 4px 4px 10px 10px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 0 0 1px #ffffff12, 0 50px 120px -40px #c8202c66;
+}
+.stage__floor {
+  height: 26px;
+  margin: 0 6%;
+  background: radial-gradient(ellipse 50% 100% at 50% 0, #c8202c38, transparent 70%);
+  filter: blur(4px);
+}
+
+.player__state { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 16px; padding: 20px; text-align: center; }
+.player__poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.18; filter: blur(6px) saturate(0.7); transform: scale(1.06); }
+.player__state > :not(img) { position: relative; }
+.player__msg { margin: 0; color: var(--house-mute); max-width: 420px; }
+.player__kanji { font-family: var(--f-jp); font-size: 72px; line-height: 1; color: #ff5a63; opacity: 0.8; }
+.player__bars { display: flex; gap: 5px; height: 34px; align-items: end; }
+.player__bars i { width: 5px; background: #ff5a63; border-radius: 2px; animation: eq 1s ease-in-out infinite; }
+.player__bars i:nth-child(2) { animation-delay: -0.2s; }
+.player__bars i:nth-child(3) { animation-delay: -0.4s; }
+.player__bars i:nth-child(4) { animation-delay: -0.6s; }
+.player__bars i:nth-child(5) { animation-delay: -0.8s; }
+@keyframes eq { 0%, 100% { height: 20%; } 50% { height: 100%; } }
+
+.room__tabs { display: none; }
+
+.room__info { max-width: 1280px; margin: 0 auto; padding: 28px 0 56px; }
+.bill { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
+.bill__main .eyebrow { margin: 0 0 10px; color: #ff7d84; }
+.bill__main h2 { font-size: clamp(38px, 4.6vw, 64px); text-transform: capitalize; }
+.bill__facts { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 16px 0 0; font-size: 12px; }
+.bill__facts li { padding: 5px 10px; border: 1px solid var(--house-line); border-radius: 999px; color: var(--house-mute); text-transform: capitalize; }
+.room__desc { white-space: pre-line; color: var(--house-mute); margin: 16px 0 0; max-width: 620px; }
+
+.bill__ticket {
+  --cut: calc(100% - 56px);
+  --hole: 9px;
+  display: grid;
+  grid-template-columns: 1fr 56px;
+  background: var(--paper);
+  background-image: var(--grain);
+  color: var(--ink);
+  border-radius: 12px;
+  transform: rotate(1.2deg);
+  transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.bill__ticket:hover { transform: rotate(0deg) translateY(-3px); }
+.bill__tmain { padding: 18px 18px 16px; border-right: 2px dashed var(--line); min-width: 0; }
+.bill__tmain .eyebrow { margin: 0 0 4px; color: var(--red); }
+.bill__email { display: block; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bill__ticket dl { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin: 14px 0 0; }
+.bill__ticket dt { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+.bill__ticket dd { margin: 2px 0 0; font-size: 13px; font-weight: 600; }
+.bill__tstub { display: grid; place-items: center; background: var(--red); color: #fff; border-radius: 0 12px 12px 0; }
+.bill__tstub span { font-family: var(--f-jp); font-size: 30px; }
+
+.lineup { margin-top: 44px; }
+.lineup__head { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 12px; margin-bottom: 18px; border-bottom: 1px solid var(--house-line); }
+.lineup__head .eyebrow { margin: 0; color: var(--house-ink); font-size: 13px; }
+.lineup__head .mono { font-size: 12px; color: var(--house-mute); }
+.lineup ul { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 18px 14px; }
+.lineup li { position: relative; display: grid; gap: 8px; font-size: 13px; }
+.lineup__img { position: relative; overflow: hidden; border-radius: 8px; aspect-ratio: 3 / 4; background: var(--house-2); }
+.lineup__img img { width: 100%; height: 100%; object-fit: cover; filter: grayscale(0.4) contrast(1.05); transition: filter 0.4s ease, transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.lineup__img::after { content: ""; position: absolute; inset: 0; background: linear-gradient(transparent 55%, #0f0c0acc); }
+.lineup li:hover img { filter: none; transform: scale(1.06); }
+.lineup__no { position: absolute; top: 8px; left: 8px; z-index: 1; font-size: 10px; padding: 2px 6px; border-radius: 3px; background: #0f0c0ab3; color: var(--house-ink); }
+.lineup__name { font-weight: 600; line-height: 1.25; }
+
+.room__keys { margin: 40px 0 0; font-size: 11px; color: #6f6357; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.room__keys kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border: 1px solid var(--house-line); border-bottom-width: 2px; border-radius: 4px; color: var(--house-ink); font-family: var(--f-mono); font-size: 10px; }
+
+/* mode teater: layar melebar penuh, obrolan disembunyikan */
+.room--theater .room__grid { grid-template-columns: minmax(0, 1fr); }
+.room--theater .chat { display: none; }
+.room--theater .room__stage { padding: 0; }
+.room--theater .stage { max-width: none; }
+.room--theater .stage__valance { margin: 0; border-radius: 0; }
+.room--theater .stage__screen { border-radius: 0; max-height: calc(100dvh - 60px - 16px); aspect-ratio: auto; height: min(56.25vw, calc(100dvh - 76px)); }
+.room--theater .room__info { padding-left: 28px; padding-right: 28px; }
+
+/* ── chat ───────────────────────────────────────────────── */
+.chat {
+  position: sticky;
+  top: 60px;
+  height: calc(100dvh - 60px);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  border-left: 1px solid var(--house-line);
+  background: var(--house-2);
+}
+.chat__head { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid var(--house-line); font-weight: 600; }
+.chat__status { font-size: 11px; color: var(--house-mute); }
+.chat__status.is-on { color: #9fd3a8; }
+.chat__list { overflow-y: auto; padding: 12px 18px; display: grid; align-content: start; gap: 9px; overscroll-behavior: contain; }
+.chat__empty { color: var(--house-mute); font-size: 14px; }
+.msg { font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.msg__time { font-size: 10px; color: #6f6357; margin-right: 8px; }
+.msg__name { font-weight: 700; margin-right: 6px; }
+.msg__name em { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; background: var(--red); color: #fff; padding: 1px 5px; border-radius: 3px; margin-right: 6px; }
+.msg__text { color: #dcd2c4; }
+.chat__foot { padding: 12px 14px 14px; border-top: 1px solid var(--house-line); display: grid; gap: 8px; }
+.chat__nick { justify-self: start; background: none; border: 0; padding: 0; font-size: 12px; color: var(--house-mute); cursor: pointer; }
+.chat__form { display: flex; gap: 8px; }
+.chat__input {
+  flex: 1;
+  min-width: 0;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--house-line);
+  border-radius: 999px;
+  background: var(--house);
+  color: var(--house-ink);
+  outline: none;
+}
+.chat__input:focus { border-color: #ff5a63; }
+.chat__send {
+  height: 42px;
+  min-width: 42px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.chat__send:disabled { opacity: 0.4; cursor: default; }
+
+@media (max-width: 980px) {
+  .room__grid { grid-template-columns: 1fr; min-height: 0; }
+  .room__viewers { display: none; }
+  .room__stage { padding: 0; }
+  .stage { position: sticky; top: 60px; z-index: 5; }
+  .stage__valance { margin: 0; height: 14px; border-radius: 0; }
+  .stage__screen { border-radius: 0; }
+  .stage__floor { display: none; }
+  .room__tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    position: sticky;
+    top: calc(60px + 14px + 56.25vw);
+    z-index: 4;
+    background: var(--house);
+    border-bottom: 1px solid var(--house-line);
+  }
+  .room__tabs button { position: relative; height: 46px; border: 0; background: none; color: var(--house-mute); font-weight: 600; cursor: pointer; }
+  .room__tabs button.is-on { color: var(--house-ink); }
+  .room__tabs button.is-on::after { content: ""; position: absolute; left: 30%; right: 30%; bottom: -1px; height: 2px; background: #ff5a63; }
+  .room__info { padding: 22px 16px 40px; }
+  .room[data-tab="chat"] .room__info { display: none; }
+  .room[data-tab="info"] .chat { display: none; }
+  .chat { position: static; height: calc(100dvh - 60px - 14px - 56.25vw - 47px); min-height: 320px; border-left: 0; }
+  .chat__head { display: none; }
+  .bill { grid-template-columns: 1fr; }
+  .bill__ticket { transform: none; }
+  .room__keys { display: none; }
+  .room--theater .chat { display: grid; }
+  .room--theater .stage__screen { height: auto; aspect-ratio: 16 / 9; }
+}
+@media (max-width: 560px) {
+  .room__bar { gap: 12px; padding: 0 12px; }
+  .room__brand { display: none; }
+  .gatecard { grid-template-columns: 1fr 58px; --cut: calc(100% - 58px); }
+  .gatecard__main { padding: 22px; }
+  .gatecard__kanji { font-size: 32px; }
+  .lineup ul { grid-template-columns: repeat(3, 1fr); gap: 14px 10px; }
+}

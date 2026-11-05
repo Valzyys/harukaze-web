@@ -1,0 +1,193 @@
+/* ─────────────────────────────────────────────────────────────
+   Harukaze48 — sistem visual
+   Konsep: "tiket teater" — kertas hangat, tinta pekat, merah stempel.
+   Ruang nonton memakai varian gelap (lampu gedung dimatikan).
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  --paper: #f2ece2;
+  --paper-2: #e9e1d4;
+  --paper-3: #ddd3c3;
+  --ink: #17120e;
+  --ink-2: #3d352e;
+  --ink-3: #74685c;
+  --line: #cfc3b1;
+  --red: #c8202c;
+  --red-deep: #8f141d;
+  --red-soft: #f4d6d2;
+  --gold: #b88a2c;
+  --ok: #2f6b3f;
+
+  --house: #0f0c0a;
+  --house-2: #1a1512;
+  --house-3: #2a221d;
+  --house-line: #3a302a;
+  --house-ink: #efe6d8;
+  --house-mute: #9d8f80;
+
+  --f-display: "Gloock", "Times New Roman", serif;
+  --f-body: "Hanken Grotesk", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, monospace;
+  --f-jp: "Zen Antique", "Hiragino Mincho ProN", serif;
+
+  --r: 6px;
+  --gutter: clamp(16px, 4vw, 48px);
+  --max: 1240px;
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.07 0 0 0 0 0.05 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  background-image: var(--grain);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+img { display: block; max-width: 100%; }
+a { color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
+::selection { background: var(--red); color: var(--paper); }
+
+.wrap { width: 100%; max-width: var(--max); margin: 0 auto; padding: 0 var(--gutter); }
+
+.mono { font-family: var(--f-mono); letter-spacing: -0.01em; }
+.eyebrow {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.display {
+  font-family: var(--f-display);
+  font-weight: 400;
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+/* ── tombol ─────────────────────────────────────────────── */
+.btn {
+  --bg: var(--ink);
+  --fg: var(--paper);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 22px;
+  border: 1.5px solid var(--bg);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 15px;
+  text-decoration: none;
+  cursor: pointer;
+  overflow: hidden;
+  isolation: isolate;
+  transition: color 0.35s ease, border-color 0.35s ease;
+}
+.btn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--red);
+  transform: translateY(101%);
+  transition: transform 0.45s cubic-bezier(0.7, 0, 0.2, 1);
+}
+.btn:hover::before { transform: translateY(0); }
+.btn:hover { border-color: var(--red); color: #fff; }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn:disabled::before { display: none; }
+.btn--red { --bg: var(--red); --fg: #fff; }
+.btn--red::before { background: var(--ink); }
+.btn--red:hover { border-color: var(--ink); }
+.btn--ghost { --bg: transparent; --fg: var(--ink); border-color: var(--ink); }
+.btn--sm { height: 38px; padding: 0 16px; font-size: 14px; }
+.btn .arrow { transition: transform 0.35s ease; }
+.btn:hover .arrow { transform: translateX(4px); }
+
+.link-u {
+  background: linear-gradient(currentColor, currentColor) 0 100% / 0 1.5px no-repeat;
+  transition: background-size 0.4s ease;
+  text-decoration: none;
+}
+.link-u:hover { background-size: 100% 1.5px; }
+
+/* ── field ──────────────────────────────────────────────── */
+.field { display: grid; gap: 6px; }
+.field label { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+.input {
+  width: 100%;
+  height: 50px;
+  padding: 0 16px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--r);
+  background: #fbf8f3;
+  outline: none;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.input:focus { border-color: var(--red); box-shadow: 4px 4px 0 var(--red); }
+textarea.input { height: auto; padding: 12px 16px; resize: vertical; }
+
+.note-error {
+  border-left: 3px solid var(--red);
+  background: var(--red-soft);
+  color: var(--red-deep);
+  padding: 10px 14px;
+  font-size: 14px;
+  border-radius: 0 var(--r) var(--r) 0;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: 0 0 0 0 rgba(200, 32, 44, 0.6);
+  animation: ping 1.6s ease-out infinite;
+}
+@keyframes ping { 70% { box-shadow: 0 0 0 9px rgba(200, 32, 44, 0); } 100% { box-shadow: 0 0 0 0 rgba(200, 32, 44, 0); } }
+
+/* Tiket dengan lubang setengah lingkaran di sisi (perforasi). */
+.stub {
+  --hole: 11px;
+  --cut: 70%;
+  -webkit-mask:
+    radial-gradient(circle var(--hole) at var(--cut) 0, #0000 98%, #000) top / 100% 51% no-repeat,
+    radial-gradient(circle var(--hole) at var(--cut) 100%, #0000 98%, #000) bottom / 100% 51% no-repeat;
+  mask:
+    radial-gradient(circle var(--hole) at var(--cut) 0, #0000 98%, #000) top / 100% 51% no-repeat,
+    radial-gradient(circle var(--hole) at var(--cut) 100%, #0000 98%, #000) bottom / 100% 51% no-repeat;
+}
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
