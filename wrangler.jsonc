@@ -25,5 +25,6 @@
     "PARTNER_SIGNER_BASE": "https://ap.harukaze48.my.id"
   }
   // Login admin default: kaze / haru (bisa ditimpa: ADMIN_USERNAME, ADMIN_PASSWORD)
-  // Opsional (secret): APP_SECRET
+  // Secret: SIGNER_TOKEN (wajib untuk stream, sama dengan signer/.env), APP_SECRET (opsional)
+  //   npx wrangler secret put SIGNER_TOKEN
 }

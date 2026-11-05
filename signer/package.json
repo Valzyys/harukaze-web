@@ -1,0 +1,11 @@
+{
+  "name": "harukaze-signer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Signer partner OshiGO untuk Harukaze48 (tanpa dependency, Node 18+).",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

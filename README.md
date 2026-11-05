@@ -6,8 +6,12 @@ ruang nonton.
 
 - Frontend: React + Vite, animasi GSAP (ScrollTrigger, SplitText)
 - Backend: Cloudflare Worker (`worker/index.js`) + **D1** sebagai storage
-- Stream: sesi partner lewat signer, playback/resume ke `https://st.oshigo.web.id/api/partner/...`
+- Stream: sesi partner OshiGO lewat **signer** (`signer/`), playback/resume ke `https://st.oshigo.web.id/api/partner/...`
 - Jadwal show: IDN Live Plus via JKT48Connect (tidak diubah)
+
+> Stream perlu **signer** yang jalan di host ber-IP statis (lihat `signer/README.md`).
+> OshiGO mewajibkan IP ter-whitelist, jadi tidak bisa dari Worker. Signer menandatangani
+> request, memaksa `Origin`/`Referer` ke `harukaze48.my.id`, dan memanggil `st.oshigo.web.id`.
 
 ## Deploy (sekali jalan)
 
@@ -29,7 +33,8 @@ setelah 5 kali gagal.
 | Nama | Jenis | Default | Keterangan |
 | --- | --- | --- | --- |
 | `PARTNER_ORIGIN` | var | `https://st.oshigo.web.id` | Origin partner untuk playback & resume |
-| `PARTNER_SIGNER_BASE` | var | `https://ap.harukaze48.my.id` | Worker signer HMAC (`POST /session`) |
+| `PARTNER_SIGNER_BASE` | var | `https://ap.harukaze48.my.id` | URL signer yang dipanggil Worker (`POST /session`) |
+| `SIGNER_TOKEN` | secret | — | Token rahasia Worker→signer (sama dengan `signer/.env`) |
 | `ADMIN_USERNAME` | var/secret | `kaze` | Username admin |
 | `ADMIN_PASSWORD` | secret | `haru` | Password admin default (dipakai selama belum diganti dari panel) |
 | `APP_SECRET` | secret | dibuat otomatis di D1 | Kunci tanda tangan token |

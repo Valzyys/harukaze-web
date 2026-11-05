@@ -28,9 +28,24 @@ const maskEmail = (e = "") => {
   return `${u.slice(0, 2)}${"•".repeat(Math.max(2, Math.min(6, u.length - 2)))}@${d}`;
 };
 
+// OshiGO membalas URL berhost oshigo.web.id (sudah di-takedown) → paksa ke PARTNER_ORIGIN.
+function toPartner(url) {
+  try {
+    const u = new URL(url, PARTNER_ORIGIN);
+    if (u.pathname.startsWith("/api/partner")) {
+      const o = new URL(PARTNER_ORIGIN);
+      u.protocol = o.protocol;
+      u.host = o.host;
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 // Tukar playback_url → playlist (browser langsung ke partner origin agar cookie terpasang).
 async function exchange(playbackUrl) {
-  const res = await fetch(playbackUrl, { credentials: "include" });
+  const res = await fetch(toPartner(playbackUrl), { credentials: "include" });
   const data = await res.json();
   if (!data.ok) throw new Error(partnerMsg(data, "Gagal membuka stream."));
   return data;
@@ -84,7 +99,7 @@ export default function Room() {
         const pb = await exchange(r.playback_url);
         setStream({
           state: "ready",
-          src: pb.playlist_url,
+          src: toPartner(pb.playlist_url),
           headerName: pb.play_header_name || "X-Play-Key",
           headerValue: pb.play_header_value || "",
           maxRes: pb.max_resolution || r.max_resolution || null,
@@ -103,7 +118,7 @@ export default function Room() {
       const res = await fetch(`${PARTNER_ORIGIN}/api/partner/resume`, { credentials: "include" });
       const r = await res.json();
       if (r.ok && r.playlist_url) {
-        setStream((s) => ({ ...s, state: "ready", src: r.playlist_url, headerName: r.play_header_name || "X-Play-Key", headerValue: r.play_header_value || "" }));
+        setStream((s) => ({ ...s, state: "ready", src: toPartner(r.playlist_url), headerName: r.play_header_name || "X-Play-Key", headerValue: r.play_header_value || "" }));
       } else await startStream();
     } catch {
       await startStream();

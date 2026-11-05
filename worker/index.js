@@ -225,12 +225,14 @@ async function streamSession(request, env) {
   if (!dev) return fail("DEVICE_RESET", "Perangkat ini sudah dilepas oleh admin. Masukkan email lagi.", 401);
 
   const signer = (env.PARTNER_SIGNER_BASE || DEFAULT_SIGNER).replace(/\/$/, "");
-  const origin = request.headers.get("origin") || new URL(request.url).origin;
   let data;
   try {
     const res = await fetch(`${signer}/session`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin },
+      headers: {
+        "content-type": "application/json",
+        ...(env.SIGNER_TOKEN ? { "x-signer-token": env.SIGNER_TOKEN } : {}),
+      },
       body: JSON.stringify({ show_slug: p.s, viewer_id: (await sha256Hex(p.e)).slice(0, 32), ttl: 120 }),
     });
     data = await res.json();
@@ -240,6 +242,8 @@ async function streamSession(request, env) {
   if (!data || !data.ok) return json({ ok: false, code: data?.code || "SIGNER_ERROR", message: data?.message }, 502);
 
   const partnerOrigin = env.PARTNER_ORIGIN || DEFAULT_PARTNER_ORIGIN;
+  // playback_url (dan playlist/resume nanti di browser) menunjuk ke oshigo.web.id
+  // yang sudah di-takedown → arahkan ke st.oshigo.web.id.
   return json({ ...data, playback_url: toPartnerOrigin(data.playback_url, partnerOrigin) });
 }
 
