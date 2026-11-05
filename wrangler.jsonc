@@ -1,11 +1,29 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "harukaze-web",
+  "main": "worker/index.js",
   "compatibility_date": "2026-07-08",
+  "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "assets": {
     "directory": "dist",
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
   },
-  "compatibility_flags": ["nodejs_compat"]
+  // D1 tanpa database_id → wrangler membuat database & memasang binding
+  // otomatis saat `wrangler deploy` pertama. Tabel dibuat otomatis oleh Worker.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "harukaze-db",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "PARTNER_ORIGIN": "https://st.oshigo.web.id",
+    "PARTNER_SIGNER_BASE": "https://ap.harukaze48.my.id"
+  }
+  // Opsional (secret): ADMIN_PASSWORD, APP_SECRET
+  //   npx wrangler secret put ADMIN_PASSWORD
 }
