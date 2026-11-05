@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { gsap } from "../lib/gsap";
-import { store } from "../lib/api";
+import { store, deviceId } from "../lib/api";
 import { fmtTime } from "../lib/format";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "https://mzxfuaoihgzxvokwarao.supabase.co";
@@ -21,7 +21,7 @@ const defaultNick = (email) => {
   return base;
 };
 
-export default function Chat({ slug, email, open }) {
+export default function Chat({ slug, email, open, embedded = false, onPresence }) {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [nick, setNick] = useState(() => store.get("hrz_nick") || defaultNick(email));
@@ -29,16 +29,22 @@ export default function Chat({ slug, email, open }) {
   const [online, setOnline] = useState(false);
   const channel = useRef(null);
   const list = useRef(null);
+  const onPresenceRef = useRef(onPresence);
+  onPresenceRef.current = onPresence;
 
   useEffect(() => {
     let ch;
     try {
-      ch = supabase().channel(`chat-${slug}`, { config: { broadcast: { ack: true } } });
+      ch = supabase().channel(`chat-${slug}`, { config: { broadcast: { ack: true }, presence: { key: deviceId() } } });
+      ch.on("presence", { event: "sync" }, () => onPresenceRef.current?.(Object.keys(ch.presenceState()).length));
       ch.on("broadcast", { event: "pesan_baru" }, ({ payload }) => {
         setMessages((prev) =>
           prev.some((m) => m.timestamp === payload.timestamp && m.username === payload.username) ? prev : [...prev.slice(-199), payload]
         );
-      }).subscribe((status) => setOnline(status === "SUBSCRIBED"));
+      }).subscribe((status) => {
+        setOnline(status === "SUBSCRIBED");
+        if (status === "SUBSCRIBED") ch.track({ at: Date.now() }).catch(() => {});
+      });
       channel.current = ch;
     } catch {
       setOnline(false);
@@ -77,7 +83,7 @@ export default function Chat({ slug, email, open }) {
   };
 
   return (
-    <aside className={`chat${open ? " is-open" : ""}`} aria-label="Obrolan penonton">
+    <aside className={`chat${open ? " is-open" : ""}${embedded ? " chat--embedded" : ""}`} aria-label="Obrolan penonton">
       <header className="chat__head">
         <span>Obrolan penonton</span>
         <span className={`chat__status mono${online ? " is-on" : ""}`}>{online ? "terhubung" : "menyambung…"}</span>

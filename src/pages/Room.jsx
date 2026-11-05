@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { gsap, useGSAP, SplitText, prefersReducedMotion } from "../lib/gsap";
 import { api, deviceId, store, PARTNER_ORIGIN, fetchShowMembers } from "../lib/api";
-import { useShows } from "../lib/hooks";
+import { useShows, useNow } from "../lib/hooks";
 import { fmtDay, fmtDate, fmtTime, humanLeft } from "../lib/format";
-import HlsPlayer from "../components/HlsPlayer";
+import Player from "../components/Player";
 import Chat from "../components/Chat";
 import "../styles/room.css";
+import "../styles/player.css";
 
 const PARTNER_ERRORS = {
   SHOW_NOT_PURCHASED: "Show ini belum tersedia di server stream.",
@@ -20,6 +21,12 @@ const PARTNER_ERRORS = {
 const partnerMsg = (d, fallback) => PARTNER_ERRORS[d?.code] || d?.message || fallback;
 
 const passKey = (slug) => `hrz_pass:${slug}`;
+const fmtBw = (bw) => (bw > 0 ? (bw >= 1e6 ? (bw / 1e6).toFixed(1) + " Mbps" : Math.round(bw / 1e3) + " Kbps") : "—");
+const maskEmail = (e = "") => {
+  const [u, d] = e.split("@");
+  if (!d) return e;
+  return `${u.slice(0, 2)}${"•".repeat(Math.max(2, Math.min(6, u.length - 2)))}@${d}`;
+};
 
 // Tukar playback_url → playlist (browser langsung ke partner origin agar cookie terpasang).
 async function exchange(playbackUrl) {
@@ -41,9 +48,18 @@ export default function Room() {
   const [gateError, setGateError] = useState("");
 
   const [stream, setStream] = useState({ state: "idle" }); // idle | connecting | ready | error
-  const [level, setLevel] = useState(null);
+  const [stats, setStats] = useState({});
   const [members, setMembers] = useState([]);
-  const [chatOpen, setChatOpen] = useState(false);
+  const [viewers, setViewers] = useState(0);
+  const [tab, setTab] = useState("chat"); // tab di layar kecil
+  const [theater, setTheater] = useState(() => store.get("hrz_theater", false));
+  const toggleTheater = useCallback(() => {
+    setTheater((t) => {
+      store.set("hrz_theater", !t);
+      return !t;
+    });
+  }, []);
+  useNow(30000); // segarkan "sisa akses"
 
   const root = useRef(null);
   const resuming = useRef(false);
@@ -167,8 +183,10 @@ export default function Room() {
         .fromTo(".curtain__r", { xPercent: 0 }, { xPercent: 100, duration: 1.3, ease: "expo.inOut" }, "<")
         .set(".room .curtain__l, .room .curtain__r", { display: "none" })
         .from(".room__bar", { y: -40, opacity: 0, duration: 0.6 }, "-=0.6")
-        .from(".player", { scale: 0.96, opacity: 0, duration: 0.9, ease: "expo.out" }, "-=0.3")
-        .from(".room__info > *", { y: 24, opacity: 0, stagger: 0.07 }, "-=0.5")
+        .from(".stage__valance", { yPercent: -100, duration: 0.9, ease: "expo.out" }, "-=0.5")
+        .from(".stage__screen", { scale: 0.94, opacity: 0, duration: 1, ease: "expo.out" }, "-=0.6")
+        .from(".stage__floor", { scaleX: 0.3, opacity: 0, duration: 1 }, "<")
+        .from(".bill > *, .room__tabs", { y: 28, opacity: 0, stagger: 0.08 }, "-=0.6")
         .from(".chat", { x: 40, opacity: 0, duration: 0.7 }, "-=0.8");
     },
     { scope: root, dependencies: [Boolean(pass)] }
@@ -176,7 +194,16 @@ export default function Room() {
 
   useGSAP(
     () => {
-      if (members.length) gsap.from(".lineup li", { y: 20, opacity: 0, stagger: 0.03, duration: 0.5 });
+      if (!members.length) return;
+      gsap.from(".lineup li", {
+        y: 30,
+        opacity: 0,
+        rotate: () => gsap.utils.random(-4, 4),
+        stagger: { each: 0.035, from: "start" },
+        duration: 0.6,
+        ease: "back.out(1.5)",
+        scrollTrigger: { trigger: ".lineup", start: "top 90%" },
+      });
     },
     { scope: root, dependencies: [members.length] }
   );
@@ -220,79 +247,122 @@ export default function Room() {
   }
 
   // ── ruang nonton ──
+  const live = show?.status === "live";
+  const kindLabel = pass.grant?.kind === "pass" ? "Terusan · semua show" : "Satuan · show ini";
   return (
-    <div ref={root} className="room">
+    <div ref={root} className={`room${theater ? " room--theater" : ""}`} data-tab={tab}>
       <div className="curtain__l" aria-hidden="true" />
       <div className="curtain__r" aria-hidden="true" />
+
       <header className="room__bar">
         <Link to="/" className="room__brand">Harukaze<em>48</em></Link>
         <div className="room__title">
-          {show?.status === "live" && <span className="room__live mono"><span className="live-dot" />LIVE</span>}
+          {live && <span className="room__live mono"><span className="live-dot" />LIVE</span>}
           <span>{title}</span>
         </div>
         <div className="room__actions">
-          <span className="room__who mono" title={pass.email}>{pass.email}</span>
-          <button className="room__btn" onClick={() => setChatOpen((v) => !v)}>Obrolan</button>
+          {viewers > 0 && <span className="room__viewers mono" title="Penonton di ruangan ini"><i />{viewers} di ruangan</span>}
           <button className="room__btn room__btn--ghost" onClick={leave}>Keluar</button>
         </div>
       </header>
 
       <div className="room__grid">
         <section className="room__stage">
-          <div className="player">
-            {stream.state === "ready" ? (
-              <HlsPlayer
-                src={stream.src}
-                headerName={stream.headerName}
-                headerValue={stream.headerValue}
-                onLevel={setLevel}
-                onNeedResume={resume}
-                onUnsupported={() => setStream({ state: "error", message: "Browser ini belum didukung. Gunakan Chrome, Edge, atau Firefox terbaru." })}
-              />
-            ) : (
-              <div className="player__state">
-                {stream.state === "error" ? (
-                  <>
-                    <span className="player__kanji" aria-hidden="true">幕</span>
-                    <p className="player__msg">{stream.message}</p>
-                    <button className="btn btn--sm btn--red" onClick={() => startStream()}>Coba lagi</button>
-                  </>
-                ) : (
-                  <>
-                    <div className="player__bars" aria-hidden="true"><i /><i /><i /><i /><i /></div>
-                    <p className="player__msg mono">Menyalakan lampu panggung…</p>
-                  </>
-                )}
-              </div>
-            )}
+          <div className="stage">
+            <div className="stage__valance" aria-hidden="true" />
+            <div className="stage__screen">
+              {stream.state === "ready" ? (
+                <Player
+                  src={stream.src}
+                  headerName={stream.headerName}
+                  headerValue={stream.headerValue}
+                  maxRes={stream.maxRes}
+                  poster={show?.image}
+                  theater={theater}
+                  onToggleTheater={toggleTheater}
+                  onStats={setStats}
+                  onNeedResume={resume}
+                  onUnsupported={() => setStream({ state: "error", message: "Browser ini belum didukung. Gunakan Chrome, Edge, atau Firefox terbaru." })}
+                />
+              ) : (
+                <div className="player__state">
+                  {show?.image && <img className="player__poster" src={show.image} alt="" />}
+                  {stream.state === "error" ? (
+                    <>
+                      <span className="player__kanji" aria-hidden="true">幕</span>
+                      <p className="player__msg">{stream.message}</p>
+                      <button className="btn btn--sm btn--red" onClick={() => startStream()}>Coba lagi</button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="player__bars" aria-hidden="true"><i /><i /><i /><i /><i /></div>
+                      <p className="player__msg mono">Menyalakan lampu panggung…</p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="stage__floor" aria-hidden="true" />
+          </div>
+
+          <div className="room__tabs" role="tablist">
+            <button role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "is-on" : ""} onClick={() => setTab("chat")}>Obrolan</button>
+            <button role="tab" aria-selected={tab === "info"} className={tab === "info" ? "is-on" : ""} onClick={() => setTab("info")}>Info show</button>
           </div>
 
           <div className="room__info">
-            <div className="room__meta mono">
-              <span>Kualitas: {level ? `${level.name}${level.bandwidth ? ` · ${level.bandwidth}` : ""}` : "auto"}</span>
-              {stream.maxRes && <span>maks {stream.maxRes}p</span>}
-              <span>Akses {pass.grant?.kind === "pass" ? "terusan" : "satuan"} · sisa {humanLeft(pass.grant?.expires_at || pass.exp)}</span>
+            <div className="bill">
+              <div className="bill__main">
+                <p className="eyebrow">{live ? "Sedang tayang" : "Ruang nonton"} · Theater JKT48</p>
+                <h2 className="display">{title}</h2>
+                <ul className="bill__facts mono">
+                  {show?.scheduledAt && <li>{fmtDay(show.scheduledAt)}, {fmtDate(show.scheduledAt)}</li>}
+                  {show?.scheduledAt && <li>{fmtTime(show.scheduledAt)} WIB</li>}
+                  {show?.viewers > 0 && <li>{show.viewers.toLocaleString("id-ID")} penonton IDN</li>}
+                </ul>
+                {show?.description && <p className="room__desc">{show.description}</p>}
+              </div>
+
+              <aside className="bill__ticket stub">
+                <div className="bill__tmain">
+                  <p className="eyebrow">Tiketmu</p>
+                  <b className="bill__email" title={pass.email}>{maskEmail(pass.email)}</b>
+                  <dl>
+                    <div><dt>Jenis</dt><dd>{kindLabel}</dd></div>
+                    <div><dt>Sisa akses</dt><dd className="mono">{humanLeft(pass.grant?.expires_at || pass.exp)}</dd></div>
+                    <div><dt>Resolusi</dt><dd className="mono">{stats.height ? `${stats.height}p${stats.auto ? " · auto" : ""}` : "—"}</dd></div>
+                    <div><dt>Koneksi</dt><dd className="mono">{fmtBw(stats.bandwidth)}</dd></div>
+                  </dl>
+                </div>
+                <div className="bill__tstub" aria-hidden="true"><span>入</span></div>
+              </aside>
             </div>
-            <h2 className="display">{title}</h2>
-            {show?.description && <p className="room__desc">{show.description}</p>}
 
             {members.length > 0 && (
               <div className="lineup">
-                <p className="eyebrow">Lineup · {members.length} member</p>
+                <div className="lineup__head">
+                  <p className="eyebrow">Pemeran malam ini</p>
+                  <span className="mono">{String(members.length).padStart(2, "0")} member</span>
+                </div>
                 <ul>
-                  {members.map((m) => (
+                  {members.map((m, i) => (
                     <li key={m.id || m.name}>
-                      <img src={m.img} alt="" loading="lazy" />
-                      <span>{m.name}</span>
+                      <div className="lineup__img"><img src={m.img} alt="" loading="lazy" /></div>
+                      <span className="lineup__no mono">{String(i + 1).padStart(2, "0")}</span>
+                      <span className="lineup__name">{m.name}</span>
                     </li>
                   ))}
                 </ul>
               </div>
             )}
+
+            <p className="room__keys mono">
+              <kbd>K</kbd> putar <kbd>M</kbd> bisu <kbd>Q</kbd> resolusi <kbd>T</kbd> mode teater <kbd>F</kbd> layar penuh <kbd>L</kbd> ke live
+            </p>
           </div>
         </section>
 
-        <Chat slug={slug} email={pass.email} open={chatOpen} />
+        <Chat slug={slug} email={pass.email} onPresence={setViewers} />
       </div>
     </div>
   );
