@@ -55,13 +55,11 @@ npx wrangler secret put PARTNER_SECRET
 ## Alur akses
 
 1. Pembeli menghubungi admin (link kontak diatur di **Admin → Pengaturan**).
-2. Admin menambah akses di **Admin → Akses email**:
-   - **Per show** — pilih show dari IDN Live Plus, berlaku sampai show selesai (+6 jam) atau +1/+3 hari.
-   - **Per durasi** — semua show selama 1/3/7/14/30 hari atau jumlah hari kustom.
-   - Batas perangkat per email (default 1). Admin bisa reset perangkat, perpanjang, cabut, hapus.
-3. Pembeli membuka `/live/<slug>` → ketik email → Worker memeriksa D1, mengikat perangkat, dan
-   memberi token bertanda tangan (maks. 6 jam) → Worker menandatangani & meminta sesi ke OshiGO → browser
-   menukar `playback_url` di `st.oshigo.web.id`.
+2. Admin menambah akses lewat salah satu cara di `/admin`:
+   - **Link bypass (`Admin → Link bypass`)** — buat tautan langsung (`/b/<kode>` atau `/live/<slug>?bypass=<kode>`) tanpa perlu input email sama sekali. Bisa diatur untuk show mana (atau semua show), masa aktif link, batas perangkat per IP, serta batas jumlah IP (atau bebas IP).
+   - **Akses email (`Admin → Akses email`)** — daftarkan email pembeli (per show atau per durasi) dengan batas perangkat per email.
+   - Admin bisa salin link, perpanjang masa aktif, ubah batas perangkat/IP, reset perangkat & IP, cabut, atau hapus akses kapan saja.
+3. Pembeli cukup membuka link bypass (`/b/<kode>`) untuk langsung masuk ke ruang nonton, atau membuka `/live/<slug>` dan memasukkan email terdaftar.
 
 ## Pengembangan lokal
 

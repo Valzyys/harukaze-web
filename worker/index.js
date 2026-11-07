@@ -24,6 +24,20 @@ const SCHEMA = [
      id INTEGER PRIMARY KEY AUTOINCREMENT, grant_id TEXT NOT NULL,
      email TEXT NOT NULL, show_slug TEXT NOT NULL, at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_entries_at ON entries (at)`,
+  `CREATE TABLE IF NOT EXISTS bypass_links (
+     id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE,
+     kind TEXT NOT NULL DEFAULT 'show' CHECK (kind IN ('show','pass')),
+     show_slug TEXT, show_title TEXT,
+     starts_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+     max_devices INTEGER NOT NULL DEFAULT 1, max_ips INTEGER NOT NULL DEFAULT 1,
+     note TEXT, revoked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_bypass_code ON bypass_links (code)`,
+  `CREATE INDEX IF NOT EXISTS idx_bypass_expires ON bypass_links (expires_at)`,
+  `CREATE TABLE IF NOT EXISTS bypass_devices (
+     bypass_id TEXT NOT NULL, ip TEXT NOT NULL, device_id TEXT NOT NULL,
+     first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+     PRIMARY KEY (bypass_id, ip, device_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_bypass_devices_id ON bypass_devices (bypass_id)`,
 ];
 
 const DEFAULT_PARTNER_ORIGIN = "https://st.oshigo.web.id";
@@ -129,12 +143,26 @@ async function readJson(request) {
 }
 
 const grantCovers = (g, slug, now) =>
-  !g.revoked && g.starts_at <= now && g.expires_at > now && (g.kind === "pass" || g.show_slug === slug);
+  !g.revoked && g.starts_at <= now && g.expires_at > now && (g.kind === "pass" || !slug || g.show_slug === slug);
 
 const publicGrant = (g) => ({
   id: g.id, kind: g.kind, show_slug: g.show_slug, show_title: g.show_title,
   starts_at: g.starts_at, expires_at: g.expires_at, max_devices: g.max_devices,
 });
+
+const publicBypass = (b) => ({
+  id: b.id, code: b.code, kind: b.kind, show_slug: b.show_slug, show_title: b.show_title,
+  starts_at: b.starts_at, expires_at: b.expires_at, max_devices: b.max_devices, max_ips: b.max_ips,
+  note: b.note, bypass: true,
+});
+
+const clientIp = (request) =>
+  (
+    request.headers.get("cf-connecting-ip") ||
+    request.headers.get("x-real-ip") ||
+    (request.headers.get("x-forwarded-for") || "").split(",")[0] ||
+    "local"
+  ).trim().slice(0, 64) || "local";
 
 // ── viewer routes ─────────────────────────────────────────────────────────
 async function publicConfig(env) {
@@ -198,6 +226,104 @@ async function accessEnter(request, env) {
   const exp = Math.min(chosen.expires_at, now + VIEWER_TOKEN_TTL);
   const token = await signToken(env, { t: "v", g: chosen.id, e, s, d: dev, exp });
   return json({ ok: true, token, expires_at: exp, grant: publicGrant(chosen) });
+}
+
+async function bypassEnter(request, env) {
+  const { code, slug, device_id } = await readJson(request);
+  const c = String(code || "").trim();
+  const reqSlug = String(slug || "").trim();
+  const dev = String(device_id || "").slice(0, 64);
+  if (!c) return fail("BAD_CODE", "Kode link bypass tidak valid.");
+  if (!dev) return fail("BAD_DEVICE", "Perangkat tidak dikenali, muat ulang halaman.");
+
+  const now = Date.now();
+  const link = await env.DB.prepare("SELECT * FROM bypass_links WHERE lower(code) = lower(?)").bind(c).first();
+  if (!link) return fail("NOT_FOUND", "Link bypass tidak ditemukan atau tidak valid.", 404);
+  if (link.revoked) return fail("REVOKED", "Link bypass ini telah dicabut oleh admin.", 403);
+  if (link.starts_at > now) {
+    return fail("NOT_YET", "Link bypass ini belum aktif. Mulai berlaku " + new Date(link.starts_at).toISOString(), 403);
+  }
+  if (link.expires_at <= now) {
+    return fail("EXPIRED", "Masa aktif link bypass ini sudah berakhir.", 403);
+  }
+
+  if (link.kind === "show" && reqSlug && link.show_slug && reqSlug !== link.show_slug) {
+    return json(
+      {
+        ok: false,
+        code: "WRONG_SHOW",
+        target_slug: link.show_slug,
+        message: `Link bypass ini khusus untuk show "${link.show_title || link.show_slug}".`,
+      },
+      403
+    );
+  }
+
+  const targetSlug = link.kind === "show" ? String(link.show_slug || reqSlug).trim() : reqSlug || String(link.show_slug || "").trim();
+  const ip = clientIp(request);
+
+  const known = await env.DB.prepare(
+    "SELECT 1 FROM bypass_devices WHERE bypass_id = ? AND ip = ? AND device_id = ?"
+  ).bind(link.id, ip, dev).first();
+
+  if (!known) {
+    const { n: devOnIp } = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM bypass_devices WHERE bypass_id = ? AND ip = ?"
+    ).bind(link.id, ip).first();
+
+    if (devOnIp === 0 && link.max_ips > 0) {
+      const { n: totalIps } = await env.DB.prepare(
+        "SELECT COUNT(DISTINCT ip) AS n FROM bypass_devices WHERE bypass_id = ?"
+      ).bind(link.id).first();
+      if (totalIps >= link.max_ips) {
+        return fail(
+          "IP_LIMIT",
+          `Link bypass ini sudah mencapai batas jaringan/IP (maks ${link.max_ips} IP). Hubungi admin untuk reset.`,
+          403
+        );
+      }
+    }
+
+    if (devOnIp >= link.max_devices) {
+      return fail(
+        "DEVICE_LIMIT",
+        `Batas perangkat untuk IP ini sudah penuh (maks ${link.max_devices} perangkat/IP). Hubungi admin untuk reset.`,
+        403
+      );
+    }
+  }
+
+  const stmts = [
+    env.DB.prepare(
+      `INSERT INTO bypass_devices (bypass_id, ip, device_id, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(bypass_id, ip, device_id) DO UPDATE SET last_seen = excluded.last_seen`
+    ).bind(link.id, ip, dev, now, now),
+  ];
+  if (targetSlug) {
+    stmts.push(
+      env.DB.prepare("INSERT INTO entries (grant_id, email, show_slug, at) VALUES (?, ?, ?, ?)")
+        .bind(link.id, `bypass:${link.code}`, targetSlug, now)
+    );
+  }
+  await env.DB.batch(stmts);
+
+  const exp = Math.min(link.expires_at, now + VIEWER_TOKEN_TTL);
+  const token = await signToken(env, {
+    t: "v",
+    b: link.id,
+    c: link.code,
+    s: targetSlug,
+    d: dev,
+    ip,
+    exp,
+  });
+  return json({
+    ok: true,
+    token,
+    expires_at: exp,
+    show_slug: targetSlug,
+    grant: publicBypass(link),
+  });
 }
 
 // Ganti origin playback_url ke partner origin yang dipakai (st.oshigo.web.id)
@@ -277,14 +403,26 @@ async function resolvePartnerSlug(env, requested) {
 }
 
 async function streamSession(request, env) {
-  const { token } = await readJson(request);
+  const { token, slug: reqSlug } = await readJson(request);
   const p = await verifyToken(env, token);
-  if (!p || p.t !== "v") return fail("TOKEN_INVALID", "Sesi akses habis, masukkan email lagi.", 401);
+  if (!p || p.t !== "v") return fail("TOKEN_INVALID", "Sesi akses habis, silakan masuk ulang.", 401);
 
-  const g = await env.DB.prepare("SELECT * FROM grants WHERE id = ?").bind(p.g).first();
-  if (!g || !grantCovers(g, p.s, Date.now())) return fail("NO_ACCESS", "Akses untuk show ini sudah tidak berlaku.", 403);
-  const dev = await env.DB.prepare("SELECT 1 FROM grant_devices WHERE grant_id = ? AND device_id = ?").bind(g.id, p.d).first();
-  if (!dev) return fail("DEVICE_RESET", "Perangkat ini sudah dilepas oleh admin. Masukkan email lagi.", 401);
+  const now = Date.now();
+  const targetSlug = String(reqSlug || p.s || "").trim();
+
+  if (p.b) {
+    const b = await env.DB.prepare("SELECT * FROM bypass_links WHERE id = ?").bind(p.b).first();
+    if (!b || !grantCovers(b, targetSlug, now)) {
+      return fail("NO_ACCESS", "Link bypass untuk show ini sudah tidak berlaku.", 403);
+    }
+    const dev = await env.DB.prepare("SELECT 1 FROM bypass_devices WHERE bypass_id = ? AND device_id = ?").bind(b.id, p.d).first();
+    if (!dev) return fail("DEVICE_RESET", "Perangkat/IP untuk link ini sudah dilepas oleh admin. Buka ulang link bypass.", 401);
+  } else {
+    const g = await env.DB.prepare("SELECT * FROM grants WHERE id = ?").bind(p.g).first();
+    if (!g || !grantCovers(g, targetSlug, now)) return fail("NO_ACCESS", "Akses untuk show ini sudah tidak berlaku.", 403);
+    const dev = await env.DB.prepare("SELECT 1 FROM grant_devices WHERE grant_id = ? AND device_id = ?").bind(g.id, p.d).first();
+    if (!dev) return fail("DEVICE_RESET", "Perangkat ini sudah dilepas oleh admin. Masukkan email lagi.", 401);
+  }
 
   if (!env.PARTNER_KEY_ID || !env.PARTNER_SECRET) {
     return fail("SIGNER_NOT_CONFIGURED", "Kredensial partner (PARTNER_KEY_ID/PARTNER_SECRET) belum dipasang.", 500);
@@ -292,10 +430,11 @@ async function streamSession(request, env) {
 
   let data;
   try {
-    const slug = await resolvePartnerSlug(env, p.s);
+    const slug = await resolvePartnerSlug(env, targetSlug);
+    const viewerSeed = p.b ? `bypass:${p.b}:${p.d}` : p.e;
     data = await partnerFetch(env, "POST", `${PARTNER_API}/session`, {
       show_slug: slug,
-      viewer_id: (await sha256Hex(p.e)).slice(0, 32),
+      viewer_id: (await sha256Hex(viewerSeed)).slice(0, 32),
       ttl: 120,
     });
   } catch {
@@ -361,11 +500,12 @@ async function adminLogin(request, env) {
 async function adminStats(env) {
   const now = Date.now();
   const dayAgo = now - 24 * 60 * 60 * 1000;
-  const [active, emails, entries, upcoming] = await env.DB.batch([
+  const [active, emails, entries, upcoming, bypassActive] = await env.DB.batch([
     env.DB.prepare("SELECT COUNT(*) AS n FROM grants WHERE revoked = 0 AND starts_at <= ? AND expires_at > ?").bind(now, now),
     env.DB.prepare("SELECT COUNT(DISTINCT email) AS n FROM grants WHERE revoked = 0 AND expires_at > ?").bind(now),
     env.DB.prepare("SELECT COUNT(*) AS n FROM entries WHERE at > ?").bind(dayAgo),
     env.DB.prepare("SELECT COUNT(*) AS n FROM grants WHERE revoked = 0 AND starts_at > ?").bind(now),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM bypass_links WHERE revoked = 0 AND starts_at <= ? AND expires_at > ?").bind(now, now),
   ]);
   return json({
     ok: true,
@@ -374,6 +514,7 @@ async function adminStats(env) {
       emails: emails.results[0].n,
       entries_24h: entries.results[0].n,
       upcoming: upcoming.results[0].n,
+      bypass_active: bypassActive.results[0].n,
     },
   });
 }
@@ -450,6 +591,122 @@ async function adminDeleteGrant(id, env) {
   return json({ ok: true });
 }
 
+// ── admin bypass links ────────────────────────────────────────────────────
+async function adminListBypass(url, env) {
+  const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+  const status = url.searchParams.get("status") || "all";
+  const now = Date.now();
+  const where = [];
+  const binds = [];
+  if (q) {
+    where.push("(lower(b.code) LIKE ? OR lower(b.note) LIKE ? OR lower(b.show_title) LIKE ? OR lower(b.show_slug) LIKE ?)");
+    binds.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+  }
+  if (status === "active") { where.push("b.revoked = 0 AND b.expires_at > ?"); binds.push(now); }
+  if (status === "expired") { where.push("(b.revoked = 1 OR b.expires_at <= ?)"); binds.push(now); }
+  const sql = `SELECT b.*,
+                      (SELECT COUNT(*) FROM bypass_devices d WHERE d.bypass_id = b.id) AS devices,
+                      (SELECT COUNT(DISTINCT ip) FROM bypass_devices d WHERE d.bypass_id = b.id) AS ips,
+                      (SELECT group_concat(ip || ' (' || cnt || ')', ', ')
+                         FROM (SELECT ip, COUNT(*) AS cnt FROM bypass_devices d WHERE d.bypass_id = b.id GROUP BY ip)) AS ip_summary,
+                      (SELECT MAX(at) FROM entries e WHERE e.grant_id = b.id) AS last_entry
+               FROM bypass_links b ${where.length ? "WHERE " + where.join(" AND ") : ""}
+               ORDER BY b.created_at DESC LIMIT 300`;
+  const { results } = await env.DB.prepare(sql).bind(...binds).all();
+  return json({ ok: true, data: results });
+}
+
+async function adminCreateBypass(request, env) {
+  const body = await readJson(request);
+  const kind = body.kind === "pass" ? "pass" : "show";
+  const startsAt = Number(body.starts_at) || Date.now();
+  const expiresAt = Number(body.expires_at);
+  if (!expiresAt || expiresAt <= startsAt) return fail("BAD_RANGE", "Waktu berakhir harus setelah waktu mulai.");
+  if (kind === "show" && !body.show_slug) return fail("NO_SHOW", "Pilih show tujuan untuk link bypass ini.");
+
+  const maxDevices = Math.min(Math.max(parseInt(body.max_devices, 10) || 1, 1), 20);
+  const rawMaxIps = parseInt(body.max_ips, 10);
+  const maxIps = Number.isNaN(rawMaxIps) ? 1 : Math.min(Math.max(rawMaxIps, 0), 100);
+  const count = Math.min(Math.max(parseInt(body.count, 10) || 1, 1), 50);
+  const customCode = String(body.custom_code || "").trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40);
+
+  if (customCode && count > 1) {
+    return fail("BAD_CODE", "Kode kustom hanya bisa dipakai saat membuat 1 link.");
+  }
+  if (customCode) {
+    const exists = await env.DB.prepare("SELECT 1 FROM bypass_links WHERE lower(code) = lower(?)").bind(customCode).first();
+    if (exists) return fail("CODE_TAKEN", "Kode link sudah dipakai, gunakan kode lain.");
+  }
+
+  const now = Date.now();
+  const showSlug = kind === "show" ? String(body.show_slug) : (body.show_slug ? String(body.show_slug) : null);
+  const showTitle = kind === "show" ? String(body.show_title || body.show_slug) : (body.show_title ? String(body.show_title) : null);
+  const note = body.note ? String(body.note).slice(0, 200) : null;
+
+  const created = [];
+  const stmts = [];
+  for (let i = 0; i < count; i++) {
+    const id = randomId(9);
+    const code = customCode || randomId(8);
+    created.push({
+      id,
+      code,
+      kind,
+      show_slug: showSlug,
+      show_title: showTitle,
+      starts_at: startsAt,
+      expires_at: expiresAt,
+      max_devices: maxDevices,
+      max_ips: maxIps,
+      note,
+      revoked: 0,
+      created_at: now,
+    });
+    stmts.push(
+      env.DB.prepare(
+        `INSERT INTO bypass_links (id, code, kind, show_slug, show_title, starts_at, expires_at, max_devices, max_ips, note, revoked, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+      ).bind(id, code, kind, showSlug, showTitle, startsAt, expiresAt, maxDevices, maxIps, note, now)
+    );
+  }
+  await env.DB.batch(stmts);
+  return json({ ok: true, created: created.length, data: created });
+}
+
+async function adminUpdateBypass(id, request, env) {
+  const body = await readJson(request);
+  const b = await env.DB.prepare("SELECT * FROM bypass_links WHERE id = ?").bind(id).first();
+  if (!b) return fail("NOT_FOUND", "Link bypass tidak ditemukan.", 404);
+  if (body.action === "extend") {
+    const ms = Number(body.ms) || 0;
+    if (ms <= 0) return fail("BAD_DURATION", "Durasi tidak valid.");
+    const base = Math.max(b.expires_at, Date.now());
+    await env.DB.prepare("UPDATE bypass_links SET expires_at = ?, revoked = 0 WHERE id = ?").bind(base + ms, id).run();
+  } else if (body.action === "revoke") {
+    await env.DB.prepare("UPDATE bypass_links SET revoked = 1 WHERE id = ?").bind(id).run();
+  } else if (body.action === "restore") {
+    await env.DB.prepare("UPDATE bypass_links SET revoked = 0 WHERE id = ?").bind(id).run();
+  } else if (body.action === "reset_devices") {
+    await env.DB.prepare("DELETE FROM bypass_devices WHERE bypass_id = ?").bind(id).run();
+  } else if (body.action === "limits") {
+    const maxDevices = body.max_devices !== undefined
+      ? Math.min(Math.max(parseInt(body.max_devices, 10) || 1, 1), 20)
+      : b.max_devices;
+    const rawIps = body.max_ips !== undefined ? parseInt(body.max_ips, 10) : b.max_ips;
+    const maxIps = Number.isNaN(rawIps) ? b.max_ips : Math.min(Math.max(rawIps, 0), 100);
+    await env.DB.prepare("UPDATE bypass_links SET max_devices = ?, max_ips = ? WHERE id = ?").bind(maxDevices, maxIps, id).run();
+  } else return fail("BAD_ACTION", "Aksi tidak dikenal.");
+  return json({ ok: true });
+}
+
+async function adminDeleteBypass(id, env) {
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM bypass_devices WHERE bypass_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM bypass_links WHERE id = ?").bind(id),
+  ]);
+  return json({ ok: true });
+}
+
 async function adminSaveSettings(request, env) {
   const body = await readJson(request);
   const stmts = [];
@@ -481,6 +738,7 @@ async function handleApi(request, env, url) {
   if (pathname === "/api/config" && m === "GET") return publicConfig(env);
   if (pathname === "/api/access/lookup" && m === "POST") return accessLookup(request, env);
   if (pathname === "/api/access/enter" && m === "POST") return accessEnter(request, env);
+  if (pathname === "/api/bypass/enter" && m === "POST") return bypassEnter(request, env);
   if (pathname === "/api/stream/session" && m === "POST") return streamSession(request, env);
 
   if (pathname === "/api/admin/login" && m === "POST") return adminLogin(request, env);
@@ -493,6 +751,11 @@ async function handleApi(request, env, url) {
     const gm = pathname.match(/^\/api\/admin\/grants\/([\w-]+)$/);
     if (gm && m === "PATCH") return adminUpdateGrant(gm[1], request, env);
     if (gm && m === "DELETE") return adminDeleteGrant(gm[1], env);
+    if (pathname === "/api/admin/bypass" && m === "GET") return adminListBypass(url, env);
+    if (pathname === "/api/admin/bypass" && m === "POST") return adminCreateBypass(request, env);
+    const bm = pathname.match(/^\/api\/admin\/bypass\/([\w-]+)$/);
+    if (bm && m === "PATCH") return adminUpdateBypass(bm[1], request, env);
+    if (bm && m === "DELETE") return adminDeleteBypass(bm[1], env);
     if (pathname === "/api/admin/settings" && m === "GET") {
       const { results } = await env.DB.prepare("SELECT key, value FROM settings").all();
       const out = {};

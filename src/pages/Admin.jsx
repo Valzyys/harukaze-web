@@ -17,14 +17,41 @@ const PASS_PRESETS = [
 ];
 const SHOW_PRESETS = [
   ["Sampai show selesai", 6 * HOUR],
+  ["+12 jam", 12 * HOUR],
   ["+1 hari setelah show", DAY],
   ["+3 hari setelah show", 3 * DAY],
+  ["+7 hari setelah show", 7 * DAY],
+];
+
+const BYPASS_SHOW_PRESETS = [
+  ["Sampai show selesai (6j)", 6 * HOUR],
+  ["12 jam", 12 * HOUR],
+  ["1 hari", DAY],
+  ["3 hari", 3 * DAY],
+  ["7 hari", 7 * DAY],
 ];
 
 const toLocalInput = (ts) => {
   const d = new Date(ts - new Date().getTimezoneOffset() * 60000);
   return d.toISOString().slice(0, 16);
 };
+
+const buildBypassUrl = (b, mode = "short") => {
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://harukaze48.my.id";
+  if (mode === "direct" && b.show_slug) {
+    return `${origin}/live/${b.show_slug}?bypass=${encodeURIComponent(b.code)}`;
+  }
+  return `${origin}/b/${encodeURIComponent(b.code)}`;
+};
+
+async function copyText(text, toast, label = "Link bypass disalin") {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(label);
+  } catch {
+    toast("Gagal menyalin otomatis, salin manual dari kotak link.", true);
+  }
+}
 
 // ── login ─────────────────────────────────────────────────────────────────
 function AdminAuth({ onToken }) {
@@ -89,7 +116,7 @@ function Stat({ label, value }) {
   );
 }
 
-// ── form tambah akses ─────────────────────────────────────────────────────
+// ── form tambah akses email ───────────────────────────────────────────────
 function GrantForm({ token, shows, onCreated, toast }) {
   const [kind, setKind] = useState("show");
   const [emails, setEmails] = useState("");
@@ -234,7 +261,7 @@ function GrantForm({ token, shows, onCreated, toast }) {
   );
 }
 
-// ── daftar akses ──────────────────────────────────────────────────────────
+// ── daftar akses email ────────────────────────────────────────────────────
 function GrantList({ token, grants, loading, q, setQ, status, setStatus, reload, toast }) {
   const root = useRef(null);
   useGSAP(() => {
@@ -311,6 +338,422 @@ function GrantList({ token, grants, loading, q, setQ, status, setStatus, reload,
   );
 }
 
+// ── form buat link bypass ─────────────────────────────────────────────────
+function BypassForm({ token, shows, onCreated, toast }) {
+  const [kind, setKind] = useState("show");
+  const [slug, setSlug] = useState("");
+  const [manualSlug, setManualSlug] = useState("");
+  const [after, setAfter] = useState(BYPASS_SHOW_PRESETS[0][1]);
+  const [customHours, setCustomHours] = useState("");
+  const [useCustomEnd, setUseCustomEnd] = useState(false);
+  const [customEnd, setCustomEnd] = useState(() => toLocalInput(Date.now() + 6 * HOUR));
+  const [start, setStart] = useState(() => toLocalInput(Date.now()));
+  const [dur, setDur] = useState(DAY);
+  const [customDays, setCustomDays] = useState("");
+  const [devicesPerIp, setDevicesPerIp] = useState(1);
+  const [maxIps, setMaxIps] = useState(1);
+  const [unlimitedIps, setUnlimitedIps] = useState(false);
+  const [customCode, setCustomCode] = useState("");
+  const [count, setCount] = useState(1);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [justCreated, setJustCreated] = useState([]);
+
+  useEffect(() => {
+    if (!slug && shows.length) setSlug(shows[0].slug);
+  }, [shows, slug]);
+
+  const show = shows.find((s) => s.slug === slug);
+  const effSlug = slug === "__manual" ? manualSlug.trim() : slug;
+
+  const range = useMemo(() => {
+    if (useCustomEnd) {
+      const s = kind === "pass" ? (new Date(start).getTime() || Date.now()) : Date.now();
+      const e = new Date(customEnd).getTime() || (s + 6 * HOUR);
+      return { starts_at: s, expires_at: e };
+    }
+    if (kind === "show") {
+      const base = show?.scheduledAt || Date.now();
+      const addMs = customHours ? Number(customHours) * HOUR : after;
+      return { starts_at: Date.now(), expires_at: Math.max(base, Date.now()) + addMs };
+    }
+    const s = new Date(start).getTime() || Date.now();
+    const d = customDays ? Number(customDays) * DAY : dur;
+    return { starts_at: s, expires_at: s + d };
+  }, [kind, show, after, customHours, useCustomEnd, customEnd, start, dur, customDays]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (kind === "show" && !effSlug) {
+      return setError("Pilih show tujuan terlebih dahulu.");
+    }
+    setBusy(true);
+    const r = await api("/admin/bypass", {
+      method: "POST",
+      token,
+      body: {
+        kind: kind === "show" ? "show" : "pass",
+        show_slug: kind === "show" ? effSlug : undefined,
+        show_title: kind === "show" ? show?.title || effSlug : undefined,
+        ...range,
+        max_devices: devicesPerIp,
+        max_ips: unlimitedIps ? 0 : maxIps,
+        custom_code: customCode.trim() || undefined,
+        count: customCode.trim() ? 1 : count,
+        note,
+      },
+    });
+    setBusy(false);
+    if (!r.ok) return setError(r.message || "Gagal membuat link bypass.");
+    setJustCreated(r.data || []);
+    setCustomCode("");
+    setNote("");
+    if (r.data?.length === 1) {
+      copyText(buildBypassUrl(r.data[0]), toast, "Link bypass dibuat & disalin ke clipboard!");
+    } else {
+      toast(`${r.created} link bypass berhasil dibuat`);
+    }
+    onCreated();
+  };
+
+  return (
+    <form className="panel grantform" onSubmit={submit}>
+      <header className="panel__head">
+        <h2 className="display">Buat link bypass</h2>
+        <div className="seg" role="radiogroup" aria-label="Jenis link bypass">
+          <button type="button" role="radio" aria-checked={kind === "show"} className={kind === "show" ? "is-on" : ""} onClick={() => setKind("show")}>Per show</button>
+          <button type="button" role="radio" aria-checked={kind === "pass"} className={kind === "pass" ? "is-on" : ""} onClick={() => setKind("pass")}>Semua show</button>
+          <i className="seg__thumb" style={{ transform: `translateX(${kind === "show" ? 0 : 100}%)` }} />
+        </div>
+      </header>
+
+      {kind === "show" ? (
+        <>
+          <div className="field">
+            <label htmlFor="b-show">Akses ke show mana</label>
+            <select id="b-show" className="input" value={slug} onChange={(e) => setSlug(e.target.value)}>
+              {shows.map((s) => (
+                <option key={s.slug} value={s.slug}>{s.status === "live" ? "● LIVE — " : ""}{s.title}</option>
+              ))}
+              <option value="__manual">Isi slug show manual…</option>
+            </select>
+          </div>
+          {slug === "__manual" && (
+            <div className="field">
+              <label htmlFor="b-slug">Slug show</label>
+              <input id="b-slug" className="input mono" required value={manualSlug} onChange={(e) => setManualSlug(e.target.value)} placeholder="pajama-drive-2026-11-05-..." />
+            </div>
+          )}
+          <div className="field">
+            <label>Masa aktif link</label>
+            <div className="chips">
+              {BYPASS_SHOW_PRESETS.map(([l, v]) => (
+                <button
+                  key={l}
+                  type="button"
+                  className={!useCustomEnd && !customHours && after === v ? "is-on" : ""}
+                  onClick={() => { setAfter(v); setCustomHours(""); setUseCustomEnd(false); }}
+                >
+                  {l}
+                </button>
+              ))}
+              <label className="chips__custom">
+                <input
+                  type="number"
+                  min="1"
+                  max="720"
+                  placeholder="—"
+                  value={customHours}
+                  onChange={(e) => { setCustomHours(e.target.value); setUseCustomEnd(false); }}
+                  aria-label="Durasi kustom dalam jam"
+                />
+                jam
+              </label>
+              <button
+                type="button"
+                className={useCustomEnd ? "is-on" : ""}
+                onClick={() => setUseCustomEnd((v) => !v)}
+              >
+                Pilih waktu…
+              </button>
+            </div>
+          </div>
+          {useCustomEnd && (
+            <div className="field">
+              <label htmlFor="b-end">Berakhir pada</label>
+              <input id="b-end" className="input mono" type="datetime-local" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} />
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="field">
+            <label htmlFor="b-start">Mulai berlaku</label>
+            <input id="b-start" className="input mono" type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Masa aktif link</label>
+            <div className="chips">
+              {PASS_PRESETS.map(([l, v]) => (
+                <button
+                  key={l}
+                  type="button"
+                  className={!useCustomEnd && !customDays && dur === v ? "is-on" : ""}
+                  onClick={() => { setDur(v); setCustomDays(""); setUseCustomEnd(false); }}
+                >
+                  {l}
+                </button>
+              ))}
+              <label className="chips__custom">
+                <input
+                  type="number"
+                  min="1"
+                  max="365"
+                  placeholder="—"
+                  value={customDays}
+                  onChange={(e) => { setCustomDays(e.target.value); setUseCustomEnd(false); }}
+                  aria-label="Durasi kustom dalam hari"
+                />
+                hari
+              </label>
+              <button
+                type="button"
+                className={useCustomEnd ? "is-on" : ""}
+                onClick={() => setUseCustomEnd((v) => !v)}
+              >
+                Pilih waktu…
+              </button>
+            </div>
+          </div>
+          {useCustomEnd && (
+            <div className="field">
+              <label htmlFor="b-end-pass">Berakhir pada</label>
+              <input id="b-end-pass" className="input mono" type="datetime-local" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} />
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="bypass-limits">
+        <div className="field">
+          <label>Perangkat per IP</label>
+          <div className="stepper">
+            <button type="button" onClick={() => setDevicesPerIp((d) => Math.max(1, d - 1))} aria-label="Kurangi perangkat per IP">−</button>
+            <span className="mono">{devicesPerIp}</span>
+            <button type="button" onClick={() => setDevicesPerIp((d) => Math.min(20, d + 1))} aria-label="Tambah perangkat per IP">+</button>
+          </div>
+        </div>
+
+        <div className="field">
+          <label>Batas jumlah IP</label>
+          <div className="bypass-ip-control">
+            {!unlimitedIps && (
+              <div className="stepper">
+                <button type="button" onClick={() => setMaxIps((n) => Math.max(1, n - 1))} aria-label="Kurangi batas IP">−</button>
+                <span className="mono">{maxIps}</span>
+                <button type="button" onClick={() => setMaxIps((n) => Math.min(100, n + 1))} aria-label="Tambah batas IP">+</button>
+              </div>
+            )}
+            <button
+              type="button"
+              className={`chip-toggle${unlimitedIps ? " is-on" : ""}`}
+              onClick={() => setUnlimitedIps((u) => !u)}
+            >
+              {unlimitedIps ? "∞ Bebas IP (aktif)" : "Bebas IP"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grantform__row">
+        <div className="field">
+          <label htmlFor="b-count">Jumlah link</label>
+          <div className="stepper">
+            <button type="button" onClick={() => setCount((c) => Math.max(1, c - 1))} disabled={Boolean(customCode.trim())} aria-label="Kurangi jumlah link">−</button>
+            <span className="mono">{customCode.trim() ? 1 : count}</span>
+            <button type="button" onClick={() => setCount((c) => Math.min(50, c + 1))} disabled={Boolean(customCode.trim())} aria-label="Tambah jumlah link">+</button>
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="b-code">Kode kustom (opsional)</label>
+          <input
+            id="b-code"
+            className="input mono"
+            value={customCode}
+            maxLength={40}
+            onChange={(e) => setCustomCode(e.target.value)}
+            placeholder="otomatis jika kosong"
+          />
+        </div>
+      </div>
+
+      <div className="field">
+        <label htmlFor="b-note">Catatan / nama penerima (opsional)</label>
+        <input id="b-note" className="input" value={note} maxLength={200} onChange={(e) => setNote(e.target.value)} placeholder="mis. Buyer WA Andi / VIP" />
+      </div>
+
+      <p className="grantform__sum mono">
+        {kind === "show" ? (show?.name || effSlug || "—") : "Semua show"} · {devicesPerIp} perangkat/IP · {unlimitedIps ? "IP bebas" : `maks ${maxIps} IP`} · {fmtDateTime(range.starts_at)} → {fmtDateTime(range.expires_at)}
+      </p>
+      {error && <p className="note-error">{error}</p>}
+      <button className="btn btn--red" disabled={busy || (kind === "show" && !effSlug)}>
+        {busy ? <span className="spinner" /> : <>Buat link bypass <span className="arrow">→</span></>}
+      </button>
+
+      {justCreated.length > 0 && (
+        <div className="bypass-created">
+          <div className="bypass-created__head">
+            <span className="eyebrow">Link baru dibuat ({justCreated.length})</span>
+            {justCreated.length > 1 && (
+              <button
+                type="button"
+                className="link-u mono"
+                onClick={() => copyText(justCreated.map((x) => buildBypassUrl(x)).join("\n"), toast, "Semua link disalin")}
+              >
+                Salin semua
+              </button>
+            )}
+          </div>
+          <ul className="bypass-created__list">
+            {justCreated.map((item) => {
+              const shortUrl = buildBypassUrl(item, "short");
+              return (
+                <li key={item.id} className="bypass-created__item">
+                  <input className="input input--sm mono" readOnly value={shortUrl} onFocus={(e) => e.target.select()} aria-label="URL link bypass" />
+                  <button type="button" className="btn btn--sm" onClick={() => copyText(shortUrl, toast)}>Salin</button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </form>
+  );
+}
+
+// ── daftar link bypass ────────────────────────────────────────────────────
+function BypassList({ token, links, loading, q, setQ, status, setStatus, reload, toast }) {
+  const root = useRef(null);
+  useGSAP(() => {
+    if (!loading) gsap.from(".grow", { y: 14, opacity: 0, stagger: 0.025, duration: 0.45 });
+  }, { scope: root, dependencies: [loading, links.length, status] });
+
+  const act = async (b, body, msg) => {
+    const r = await api(`/admin/bypass/${b.id}`, { method: "PATCH", token, body });
+    if (!r.ok) return toast(r.message || "Gagal", true);
+    toast(msg);
+    reload();
+  };
+  const del = async (b) => {
+    if (!window.confirm(`Hapus link bypass "${b.code}"? Tindakan ini tidak bisa dibatalkan.`)) return;
+    const r = await api(`/admin/bypass/${b.id}`, { method: "DELETE", token });
+    if (!r.ok) return toast(r.message || "Gagal", true);
+    toast("Link bypass dihapus");
+    reload();
+  };
+
+  const now = Date.now();
+  return (
+    <section className="panel grantlist" ref={root}>
+      <header className="panel__head">
+        <h2 className="display">Daftar link bypass</h2>
+        <div className="grantlist__tools">
+          <input className="input input--sm" placeholder="Cari kode / show / catatan…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Cari link bypass" />
+          <select className="input input--sm" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
+            <option value="active">Aktif</option>
+            <option value="expired">Berakhir / dicabut</option>
+            <option value="all">Semua</option>
+          </select>
+        </div>
+      </header>
+      {loading ? (
+        <p className="muted">Memuat…</p>
+      ) : links.length === 0 ? (
+        <p className="muted">Belum ada link bypass di filter ini.</p>
+      ) : (
+        <ul className="grows">
+          {links.map((b) => {
+            const dead = b.revoked || b.expires_at <= now;
+            const pending = !dead && b.starts_at > now;
+            const shortUrl = buildBypassUrl(b, "short");
+            const directUrl = buildBypassUrl(b, "direct");
+            return (
+              <li key={b.id} className={`grow${dead ? " is-dead" : ""}`}>
+                <div className="grow__who">
+                  <b className="mono">{b.code}</b>
+                  <span className={`tag tag--${b.kind}`}>{b.kind === "pass" ? "semua show" : "show"}</span>
+                  {b.revoked ? <span className="tag tag--off">dicabut</span> : dead ? <span className="tag tag--off">berakhir</span> : pending ? <span className="tag">terjadwal</span> : null}
+                </div>
+                <div className="grow__what">
+                  {b.kind === "pass" ? "Semua show" : b.show_title || b.show_slug}
+                  {b.note ? <em> · {b.note}</em> : null}
+                </div>
+                <div className="bypass-url-row">
+                  <code className="bypass-url mono">{shortUrl}</code>
+                  <button type="button" className="bypass-copy-btn" onClick={() => copyText(shortUrl, toast, "Link pendek disalin")}>Salin link</button>
+                  {b.show_slug && (
+                    <button type="button" className="bypass-copy-btn" onClick={() => copyText(directUrl, toast, "Link show langsung disalin")}>Salin link show</button>
+                  )}
+                </div>
+                <div className="grow__when mono">
+                  {fmtDateTime(b.starts_at)} → {fmtDateTime(b.expires_at)}
+                  {!dead && <span> · sisa {humanLeft(b.expires_at)}</span>}
+                </div>
+                <div className="grow__dev mono">
+                  maks {b.max_devices} perangkat/IP · IP {b.ips || 0}/{b.max_ips > 0 ? b.max_ips : "∞"} · total {b.devices || 0} perangkat
+                  {b.last_entry ? ` · masuk ${fmtDateTime(b.last_entry)}` : ""}
+                </div>
+                {b.ip_summary && (
+                  <div className="grow__ips mono">IP terdaftar: {b.ip_summary}</div>
+                )}
+                <div className="grow__acts">
+                  <button onClick={() => copyText(shortUrl, toast)}>Salin</button>
+                  <button onClick={() => act(b, { action: "extend", ms: HOUR }, "Diperpanjang 1 jam")}>+1 jam</button>
+                  <button onClick={() => act(b, { action: "extend", ms: DAY }, "Diperpanjang 1 hari")}>+1 hari</button>
+                  <button onClick={() => act(b, { action: "extend", ms: 7 * DAY }, "Diperpanjang 7 hari")}>+7 hari</button>
+                  <button
+                    onClick={() => act(b, { action: "limits", max_devices: b.max_devices + 1, max_ips: b.max_ips }, `Maks perangkat/IP jadi ${b.max_devices + 1}`)}
+                    disabled={b.max_devices >= 20}
+                    title="Tambah batas perangkat per IP"
+                  >
+                    +1 dev/IP
+                  </button>
+                  {b.max_devices > 1 && (
+                    <button
+                      onClick={() => act(b, { action: "limits", max_devices: b.max_devices - 1, max_ips: b.max_ips }, `Maks perangkat/IP jadi ${b.max_devices - 1}`)}
+                      title="Kurangi batas perangkat per IP"
+                    >
+                      −1 dev/IP
+                    </button>
+                  )}
+                  <button
+                    onClick={() => act(b, { action: "limits", max_devices: b.max_devices, max_ips: b.max_ips + 1 }, `Maks IP jadi ${b.max_ips + 1}`)}
+                    disabled={b.max_ips >= 100}
+                    title="Tambah batas jumlah IP"
+                  >
+                    +1 IP
+                  </button>
+                  <button onClick={() => act(b, { action: "reset_devices" }, "Perangkat & IP direset")} disabled={!b.devices}>
+                    Reset IP/perangkat
+                  </button>
+                  {b.revoked ? (
+                    <button onClick={() => act(b, { action: "restore" }, "Link bypass dipulihkan")}>Pulihkan</button>
+                  ) : (
+                    <button onClick={() => act(b, { action: "revoke" }, "Link bypass dicabut")}>Cabut</button>
+                  )}
+                  <button className="danger" onClick={() => del(b)}>Hapus</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 // ── pengaturan ────────────────────────────────────────────────────────────
 function Settings({ token, toast }) {
   const [form, setForm] = useState(null);
@@ -368,12 +811,16 @@ export default function Admin() {
     const t = store.get("hrz_admin");
     return t && t.exp > Date.now() ? t.token : null;
   });
-  const [tab, setTab] = useState("access");
+  const [tab, setTab] = useState("bypass");
   const [stats, setStats] = useState({});
   const [grants, setGrants] = useState([]);
+  const [bypassLinks, setBypassLinks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [bypassLoading, setBypassLoading] = useState(true);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("active");
+  const [bq, setBq] = useState("");
+  const [bStatus, setBStatus] = useState("active");
   const [toasts, setToasts] = useState([]);
   const { shows } = useShows(60000);
   const root = useRef(null);
@@ -395,20 +842,23 @@ export default function Admin() {
 
   const load = useCallback(async () => {
     if (!token) return;
-    const [s, g] = await Promise.all([
+    const [s, g, b] = await Promise.all([
       api("/admin/stats", { token }),
       api(`/admin/grants?status=${status}&q=${encodeURIComponent(q)}`, { token }),
+      api(`/admin/bypass?status=${bStatus}&q=${encodeURIComponent(bq)}`, { token }),
     ]);
-    if (s.status === 401 || g.status === 401) return logout();
+    if (s.status === 401 || g.status === 401 || b.status === 401) return logout();
     if (s.ok) setStats(s.data);
     if (g.ok) setGrants(g.data);
+    if (b.ok) setBypassLinks(b.data);
     setLoading(false);
-  }, [token, status, q, logout]);
+    setBypassLoading(false);
+  }, [token, status, q, bStatus, bq, logout]);
 
   useEffect(() => {
-    const t = setTimeout(load, q ? 250 : 0);
+    const t = setTimeout(load, q || bq ? 250 : 0);
     return () => clearTimeout(t);
-  }, [load, q]);
+  }, [load, q, bq]);
 
   useGSAP(() => {
     if (!token) return;
@@ -431,19 +881,36 @@ export default function Admin() {
       </header>
 
       <div className="wrap">
-        <div className="stats">
+        <div className="stats stats--5">
           <Stat label="Akses aktif" value={stats.active} />
+          <Stat label="Link bypass aktif" value={stats.bypass_active} />
           <Stat label="Email unik" value={stats.emails} />
           <Stat label="Masuk 24 jam" value={stats.entries_24h} />
           <Stat label="Terjadwal" value={stats.upcoming} />
         </div>
 
         <div className="admin__tabs tabs">
+          <button className={tab === "bypass" ? "is-on" : ""} onClick={() => setTab("bypass")}>Link bypass</button>
           <button className={tab === "access" ? "is-on" : ""} onClick={() => setTab("access")}>Akses email</button>
           <button className={tab === "settings" ? "is-on" : ""} onClick={() => setTab("settings")}>Pengaturan</button>
         </div>
 
-        {tab === "access" ? (
+        {tab === "bypass" ? (
+          <div className="admin__grid">
+            <BypassForm token={token} shows={shows} onCreated={load} toast={toast} />
+            <BypassList
+              token={token}
+              links={bypassLinks}
+              loading={bypassLoading}
+              q={bq}
+              setQ={setBq}
+              status={bStatus}
+              setStatus={(v) => { setBypassLoading(true); setBStatus(v); }}
+              reload={load}
+              toast={toast}
+            />
+          </div>
+        ) : tab === "access" ? (
           <div className="admin__grid">
             <GrantForm token={token} shows={shows} onCreated={load} toast={toast} />
             <GrantList token={token} grants={grants} loading={loading} q={q} setQ={setQ} status={status} setStatus={(v) => { setLoading(true); setStatus(v); }} reload={load} toast={toast} />
@@ -461,3 +928,4 @@ export default function Admin() {
     </div>
   );
 }
+

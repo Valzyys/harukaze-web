@@ -13,7 +13,11 @@ const Admin = lazy(() => import("./pages/Admin"));
 function Shell() {
   const location = useLocation();
   const wipe = useRef(null);
-  const immersive = location.pathname.startsWith("/live/") || location.pathname.startsWith("/admin");
+  const immersive =
+    location.pathname.startsWith("/live/") ||
+    location.pathname.startsWith("/b/") ||
+    location.pathname.startsWith("/bypass/") ||
+    location.pathname.startsWith("/admin");
 
   // Tirai merah tipis menyapu layar tiap pindah halaman.
   useGSAP(
@@ -41,6 +45,8 @@ function Shell() {
           <Route path="/jadwal" element={<Schedule />} />
           <Route path="/akses" element={<Access />} />
           <Route path="/live/:slug" element={<Room />} />
+          <Route path="/b/:code" element={<Room />} />
+          <Route path="/bypass/:code" element={<Room />} />
           <Route path="/admin" element={<Admin />} />
           {/* tautan lama tetap jalan */}
           <Route path="/buyshow" element={<Schedule />} />

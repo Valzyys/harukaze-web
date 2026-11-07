@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { gsap, useGSAP, SplitText, prefersReducedMotion } from "../lib/gsap";
 import { api, deviceId, store, PARTNER_ORIGIN, fetchShowMembers } from "../lib/api";
 import { useShows, useNow } from "../lib/hooks";
@@ -51,15 +51,30 @@ async function exchange(playbackUrl) {
   return data;
 }
 
+function getInitialPass(slug) {
+  if (!slug) return null;
+  const saved = store.get(passKey(slug));
+  if (saved && saved.exp > Date.now()) return saved;
+  const bp = store.get("hrz_bypass_pass");
+  if (bp && bp.exp > Date.now() && (bp.grant?.kind === "pass" || bp.grant?.show_slug === slug)) return bp;
+  return null;
+}
+
 export default function Room() {
-  const { slug } = useParams();
+  const { slug: routeSlug, code: routeCode } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { shows } = useShows(30000);
+
+  const bypassCode = (routeCode || searchParams.get("bypass") || searchParams.get("k") || "").trim();
+  const [resolvedSlug, setResolvedSlug] = useState(routeSlug || "");
+  const slug = routeSlug || resolvedSlug;
   const show = shows.find((s) => s.slug === slug);
 
-  const saved = store.get(passKey(slug));
-  const [pass, setPass] = useState(saved && saved.exp > Date.now() ? saved : null);
-  const [email, setEmail] = useState(saved?.email || store.get("hrz_email", ""));
+  const [pass, setPass] = useState(() => getInitialPass(routeSlug));
+  const [email, setEmail] = useState(() => getInitialPass(routeSlug)?.email || store.get("hrz_email", ""));
   const [busy, setBusy] = useState(false);
+  const [bypassBusy, setBypassBusy] = useState(Boolean(bypassCode));
   const [gateError, setGateError] = useState("");
 
   const [stream, setStream] = useState({ state: "idle" }); // idle | connecting | ready | error
@@ -79,17 +94,96 @@ export default function Room() {
   const root = useRef(null);
   const resuming = useRef(false);
 
+  useEffect(() => {
+    if (routeSlug) {
+      setResolvedSlug(routeSlug);
+      const existing = getInitialPass(routeSlug);
+      if (existing && !bypassCode) setPass(existing);
+    }
+  }, [routeSlug, bypassCode]);
+
+  // ── masuk otomatis lewat link bypass ──
+  const redeemBypass = useCallback(
+    async (codeToUse) => {
+      if (!codeToUse) return;
+      setBypassBusy(true);
+      setGateError("");
+      const r = await api("/bypass/enter", {
+        method: "POST",
+        body: { code: codeToUse, slug: routeSlug || "", device_id: deviceId() },
+      });
+      if (!r.ok) {
+        if (r.code === "WRONG_SHOW" && r.target_slug) {
+          navigate(`/live/${r.target_slug}?bypass=${encodeURIComponent(codeToUse)}`, { replace: true });
+          return;
+        }
+        setBypassBusy(false);
+        setGateError(r.message || "Link bypass tidak dapat digunakan.");
+        return;
+      }
+
+      const targetSlug = r.show_slug || routeSlug || (shows.find((s) => s.status === "live") || shows[0])?.slug || "";
+      const p = {
+        token: r.token,
+        exp: r.expires_at,
+        email: r.grant?.note || `bypass-${r.grant?.code || codeToUse}`,
+        bypass: true,
+        bypassCode: r.grant?.code || codeToUse,
+        grant: r.grant,
+      };
+      if (targetSlug) store.set(passKey(targetSlug), p);
+      if (r.grant?.kind === "pass") store.set("hrz_bypass_pass", p);
+
+      setBypassBusy(false);
+      if (!routeSlug && targetSlug) {
+        setResolvedSlug(targetSlug);
+        setPass(p);
+        navigate(`/live/${targetSlug}`, { replace: true });
+      } else {
+        if (searchParams.has("bypass") || searchParams.has("k")) {
+          const next = new URLSearchParams(searchParams);
+          next.delete("bypass");
+          next.delete("k");
+          setSearchParams(next, { replace: true });
+        }
+        setPass(p);
+      }
+    },
+    [routeSlug, shows, navigate, searchParams, setSearchParams]
+  );
+
+  useEffect(() => {
+    if (bypassCode) {
+      redeemBypass(bypassCode);
+    }
+  }, [bypassCode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Jika link bypass berjenis "pass" (semua show) dibuka via /b/:code dan daftar show baru termuat
+  useEffect(() => {
+    if (!routeSlug && pass && !resolvedSlug && shows.length) {
+      const pick = (shows.find((s) => s.status === "live") || shows[0])?.slug;
+      if (pick) {
+        store.set(passKey(pick), pass);
+        setResolvedSlug(pick);
+        navigate(`/live/${pick}`, { replace: true });
+      }
+    }
+  }, [routeSlug, pass, resolvedSlug, shows, navigate]);
+
   // ── sesi stream ──
   const startStream = useCallback(
     async (p = pass) => {
-      if (!p) return;
+      if (!p || !slug) return;
       setStream({ state: "connecting" });
-      const r = await api("/stream/session", { method: "POST", body: { token: p.token } });
+      const r = await api("/stream/session", { method: "POST", body: { token: p.token, slug } });
       if (!r.ok) {
         if (r.status === 401 || r.status === 403) {
           store.del(passKey(slug));
+          if (p.bypass) store.del("hrz_bypass_pass");
           setPass(null);
-          setGateError(r.message || "Sesi akses habis, masukkan email lagi.");
+          setGateError(
+            r.message || (p.bypass ? "Link bypass sudah tidak berlaku atau perangkat direset admin." : "Sesi akses habis, masukkan email lagi.")
+          );
           return;
         }
         setStream({ state: "error", message: partnerMsg(r, "Gagal menyiapkan sesi stream.") });
@@ -128,8 +222,8 @@ export default function Room() {
   }, [startStream]);
 
   useEffect(() => {
-    if (pass && stream.state === "idle") startStream(pass);
-  }, [pass]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (pass && slug && stream.state === "idle") startStream(pass);
+  }, [pass, slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!show?.showId) return;
@@ -168,26 +262,29 @@ export default function Room() {
   };
 
   const leave = () => {
-    store.del(passKey(slug));
+    if (slug) store.del(passKey(slug));
+    if (pass?.bypass) store.del("hrz_bypass_pass");
     setPass(null);
     setStream({ state: "idle" });
+    if (routeCode) navigate("/", { replace: true });
   };
 
   // ── animasi ──
   useGSAP(
     () => {
-      if (pass) return;
-      const split = SplitText.create(".gatecard h1", { type: "words", mask: "words" });
+      if (pass || bypassBusy) return;
+      const h1 = root.current?.querySelector(".gatecard h1");
+      const split = h1 ? SplitText.create(h1, { type: "words", mask: "words" }) : null;
       // Tirai tertutup → membuka ke sisi, menyisakan pinggiran beludru.
       const rest = window.innerWidth < 700 ? 90 : 74;
-      gsap.timeline({ delay: 0.25 })
+      const tl = gsap.timeline({ delay: 0.25 })
         .fromTo(".curtain__l", { xPercent: 0 }, { xPercent: -rest, duration: 1.4, ease: "expo.inOut" })
         .fromTo(".curtain__r", { xPercent: 0 }, { xPercent: rest, duration: 1.4, ease: "expo.inOut" }, "<")
-        .from(".gatecard", { y: 60, opacity: 0, rotate: 3, duration: 0.9 }, "-=0.6")
-        .from(split.words, { yPercent: 100, stagger: 0.05, duration: 0.7 }, "-=0.5");
-      return () => split.revert();
+        .from(".gatecard", { y: 60, opacity: 0, rotate: 3, duration: 0.9 }, "-=0.6");
+      if (split) tl.from(split.words, { yPercent: 100, stagger: 0.05, duration: 0.7 }, "-=0.5");
+      return () => split?.revert();
     },
-    { scope: root, dependencies: [Boolean(pass)] }
+    { scope: root, dependencies: [Boolean(pass), bypassBusy] }
   );
 
   useGSAP(
@@ -223,10 +320,59 @@ export default function Room() {
     { scope: root, dependencies: [members.length] }
   );
 
-  const title = show?.name || slug.replace(/-\d{4}-\d{2}-\d{2}-\d+$/, "").replace(/-/g, " ");
+  const title = show?.name || (slug ? slug.replace(/-\d{4}-\d{2}-\d{2}-\d+$/, "").replace(/-/g, " ") : "Akses Link Bypass");
 
-  // ── gerbang email ──
+  // ── gerbang email / status bypass ──
   if (!pass) {
+    if (bypassBusy) {
+      return (
+        <div ref={root} className="gate-page">
+          <div className="curtain__l" aria-hidden="true" />
+          <div className="curtain__r" aria-hidden="true" />
+          <div className="gatecard stub">
+            <div className="gatecard__main">
+              <p className="eyebrow">Tautan Langsung · Bypass</p>
+              <h1 className="display">Membuka pintu teater…</h1>
+              <p className="gatecard__when mono">Memverifikasi link akses dan perangkat kamu</p>
+            </div>
+            <div className="gatecard__stub" aria-hidden="true">
+              <span className="mono">BYPASS</span>
+              <span className="gatecard__kanji">入</span>
+              <span className="mono">LINK</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (routeCode && !routeSlug) {
+      return (
+        <div ref={root} className="gate-page">
+          <div className="curtain__l" aria-hidden="true" />
+          <div className="curtain__r" aria-hidden="true" />
+          <Link to="/" className="gate-page__home">← Harukaze<em>48</em></Link>
+          <div className="gatecard stub">
+            <div className="gatecard__main">
+              <p className="eyebrow">Tautan Akses Bypass</p>
+              <h1 className="display">Tidak bisa masuk.</h1>
+              {gateError && <p className="note-error">{gateError}</p>}
+              <button className="btn btn--red gatecard__go" onClick={() => redeemBypass(routeCode)}>
+                Coba lagi <span className="arrow">→</span>
+              </button>
+              <p className="gatecard__help">
+                <Link className="link-u" to="/jadwal">Lihat jadwal show</Link> atau hubungi admin.
+              </p>
+            </div>
+            <div className="gatecard__stub" aria-hidden="true">
+              <span className="mono">BYPASS</span>
+              <span className="gatecard__kanji">止</span>
+              <span className="mono">LINK</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div ref={root} className="gate-page">
         <div className="curtain__l" aria-hidden="true" />
@@ -263,7 +409,12 @@ export default function Room() {
 
   // ── ruang nonton ──
   const live = show?.status === "live";
-  const kindLabel = pass.grant?.kind === "pass" ? "Terusan · semua show" : "Satuan · show ini";
+  const kindLabel = pass.bypass
+    ? (pass.grant?.kind === "pass" ? "Link bypass · semua show" : "Link bypass · show ini")
+    : (pass.grant?.kind === "pass" ? "Terusan · semua show" : "Satuan · show ini");
+  const ticketTitle = pass.bypass
+    ? (pass.grant?.note || `Kode · ${pass.grant?.code || pass.bypassCode || "Bypass"}`)
+    : maskEmail(pass.email);
   return (
     <div ref={root} className={`room${theater ? " room--theater" : ""}`} data-tab={tab}>
       <div className="curtain__l" aria-hidden="true" />
@@ -340,8 +491,8 @@ export default function Room() {
 
               <aside className="bill__ticket stub">
                 <div className="bill__tmain">
-                  <p className="eyebrow">Tiketmu</p>
-                  <b className="bill__email" title={pass.email}>{maskEmail(pass.email)}</b>
+                  <p className="eyebrow">{pass.bypass ? "Akses Bypass" : "Tiketmu"}</p>
+                  <b className="bill__email" title={pass.email}>{ticketTitle}</b>
                   <dl>
                     <div><dt>Jenis</dt><dd>{kindLabel}</dd></div>
                     <div><dt>Sisa akses</dt><dd className="mono">{humanLeft(pass.grant?.expires_at || pass.exp)}</dd></div>
