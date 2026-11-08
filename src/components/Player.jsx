@@ -8,6 +8,48 @@ const qLabel = (h) => (h >= 2160 ? "4K" : h >= 1440 ? "1440p" : h ? `${h}p` : "�
 const qTag = (h) => (h >= 2160 ? "UHD" : h >= 1080 ? "HD" : h >= 720 ? "HD" : "");
 const isTyping = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
 
+const isIOSDevice = () => {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+};
+
+const isSafariBrowser = () => {
+  if (typeof navigator === "undefined") return false;
+  return /^((?!chrome|android).)*safari/i.test(navigator.userAgent || "");
+};
+
+const canPlayNativeHls = (video) =>
+  Boolean(video && (video.canPlayType("application/vnd.apple.mpegurl") || video.canPlayType("application/x-mpegURL")));
+
+// Parse varian resolusi dari master playlist m3u8 untuk mode Native HLS (iPhone/iOS)
+function parseMasterM3u8(text, baseUrl, maxRes) {
+  const lines = String(text || "").split(/\r?\n/);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line.startsWith("#EXT-X-STREAM-INF:")) continue;
+    const resMatch = line.match(/RESOLUTION=(\d+)x(\d+)/i);
+    const bwMatch = line.match(/(?:AVERAGE-)?BANDWIDTH=(\d+)/i);
+    const height = resMatch ? parseInt(resMatch[2], 10) : 0;
+    const bitrate = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+    let uri = "";
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].trim();
+      if (!next) continue;
+      if (!next.startsWith("#")) uri = next;
+      break;
+    }
+    if (!uri) continue;
+    if (maxRes && height && height > maxRes) continue;
+    try {
+      const resolvedUrl = new URL(uri, new URL(baseUrl, window.location.origin)).toString();
+      out.push({ index: out.length, height, bitrate, url: resolvedUrl });
+    } catch { /* abaikan baris rusak */ }
+  }
+  return out.sort((a, b) => b.height - a.height || b.bitrate - a.bitrate);
+}
+
 const I = {
   play: <path d="M7 4.5v15l12.5-7.5z" fill="currentColor" />,
   pause: <path d="M6.5 4.5h4v15h-4zM13.5 4.5h4v15h-4z" fill="currentColor" />,
@@ -24,21 +66,60 @@ const Ico = ({ d, size = 22 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">{d}</svg>
 );
 
+// Lompati celah kecil (buffer hole) jika playhead tertahan padahal ada segmen di depan
+function nudgePastBufferGap(video) {
+  if (!video || !video.buffered || video.buffered.length === 0) return false;
+  const cur = video.currentTime;
+  for (let i = 0; i < video.buffered.length; i++) {
+    const start = video.buffered.start(i);
+    const end = video.buffered.end(i);
+    if (start > cur + 0.05 && start - cur < 4.5 && end > start + 0.2) {
+      video.currentTime = start + 0.08;
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Player HLS dengan kontrol sendiri:
- * pemilih resolusi (Auto / per level), volume, kembali ke LIVE, mode teater, PiP, layar penuh,
- * pintasan keyboard, auto-sembunyi kontrol. Header X-Play-Key + cookie partner tetap dikirim.
+ * - Mendukung hls.js (MSE / ManagedMediaSource) DAN Native HLS untuk iPhone / iOS Safari.
+ * - Anti-buffering & stall watchdog (lompat celah mikro otomatis, buffer lega, ABR stabil).
+ * - Pembaruan kredensial di latar belakang tanpa me-reload player saat tab ditinggal.
  */
-export default function Player({ src, headerName, headerValue, maxRes, poster, theater, onToggleTheater, onNeedResume, onUnsupported, onStats }) {
+export default function Player({
+  src,
+  proxySrc,
+  headerName,
+  headerValue,
+  maxRes,
+  poster,
+  theater,
+  onToggleTheater,
+  onNeedResume,
+  onUnsupported,
+  onStats,
+}) {
   const box = useRef(null);
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const menuRef = useRef(null);
   const hideTimer = useRef(null);
+  const bufferTimer = useRef(null);
+  const stallTimer = useRef(null);
+  const userPausedRef = useRef(false);
+  const nativeModeRef = useRef(false);
+  const masterProxyRef = useRef("");
+  const lastResumeAtRef = useRef(0);
+  const lastMediaRecoverRef = useRef(0);
+
+  const authRef = useRef({ headerName, headerValue });
+  authRef.current = { headerName, headerValue };
+
   const cb = useRef({});
   cb.current = { onNeedResume, onUnsupported, onStats };
 
-  const [levels, setLevels] = useState([]); // [{index, height, bitrate}]
+  const [levels, setLevels] = useState([]); // [{index, height, bitrate, url?}]
   const [selected, setSelected] = useState(-1); // -1 = auto
   const [current, setCurrent] = useState(null); // level aktif (index)
   const [playing, setPlaying] = useState(false);
@@ -53,56 +134,157 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
   const [isFull, setIsFull] = useState(false);
   const [flash, setFlash] = useState(null);
 
-  // ── setup hls ──
+  const computedProxySrc =
+    proxySrc ||
+    (src && !src.startsWith("/api/stream/hls") && headerName && headerValue
+      ? `/api/stream/hls?u=${encodeURIComponent(src)}&hn=${encodeURIComponent(headerName)}&hv=${encodeURIComponent(headerValue)}`
+      : src);
+  masterProxyRef.current = computedProxySrc;
+
+  // Saat headerValue diperbarui dari resume latar belakang, jangan hancurkan Hls!
+  useEffect(() => {
+    authRef.current = { headerName, headerValue };
+    if (hlsRef.current && headerValue) {
+      hlsRef.current.startLoad();
+    }
+  }, [headerName, headerValue]);
+
+  // ── setup hls / native hls (iPhone & semua browser) ──
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
-    if (!Hls.isSupported()) {
+
+    const isIOS = isIOSDevice();
+    const isSafari = isSafariBrowser();
+    const nativeSupported = canPlayNativeHls(video);
+    const hlsSupported = Hls.isSupported();
+
+    if (!hlsSupported && !nativeSupported) {
       cb.current.onUnsupported?.();
       return;
     }
-    let resumeTries = 0;
-    let retryTimer = null;
-    const extra = headerName && headerValue ? { [headerName]: headerValue } : {};
-    const config = {
-      enableWorker: true,
-      lowLatencyMode: false,
-      maxBufferLength: 30,
-      maxMaxBufferLength: 60,
-      backBufferLength: 30,
-      liveSyncDurationCount: 3,
-      liveMaxLatencyDurationCount: 10,
-      liveDurationInfinity: true,
-      fragLoadingMaxRetry: 6,
-      manifestLoadingMaxRetry: 4,
-      levelLoadingMaxRetry: 4,
-      abrEwmaDefaultEstimate: 500_000,
-      capLevelToPlayerSize: false,
-      xhrSetup: (xhr) => {
-        xhr.withCredentials = true;
-        if (headerName && headerValue) xhr.setRequestHeader(headerName, headerValue);
-      },
-      fetchSetup: (context, init) => {
-        init.credentials = "include";
-        init.headers = { ...init.headers, ...extra };
-        return new Request(context.url, init);
-      },
-    };
 
-    const autoplay = () =>
+    let destroyed = false;
+    let retryTimer = null;
+
+    const autoplay = () => {
+      if (destroyed) return;
       video.play().catch(() => {
-        // Browser menolak autoplay bersuara → putar tanpa suara, tampilkan ajakan menyalakan suara.
+        if (destroyed) return;
+        // Browser / iOS menolak autoplay bersuara → putar tanpa suara, tampilkan tombol nyalakan suara.
         video.muted = true;
         setMuted(true);
         setNeedsUnmute(true);
         video.play().catch(() => setPlaying(false));
       });
+    };
 
-    const wire = (hls) => {
+    // Fungsi masuk ke mode Native HLS (utama untuk iPhone atau fallback saat MSE gagal di iOS/Safari)
+    const startNativeHls = async (targetMasterUrl) => {
+      if (destroyed) return;
+      nativeModeRef.current = true;
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      const playUrl = targetMasterUrl || masterProxyRef.current || src;
+      video.src = playUrl;
+      video.load();
+      autoplay();
+
+      // Ambil daftar resolusi dari master m3u8 agar menu kualitas tetap berfungsi di iPhone
+      try {
+        const res = await fetch(playUrl, { credentials: "include" });
+        if (res.ok && !destroyed) {
+          const text = await res.text();
+          const parsed = parseMasterM3u8(text, playUrl, maxRes);
+          if (parsed.length) {
+            setLevels(parsed);
+            setCurrent(0);
+          }
+        }
+      } catch { /* biarkan Auto bawaan iOS bekerja */ }
+    };
+
+    // Pada iPhone (atau jika Hls.isSupported() false tapi Native HLS didukung),
+    // gunakan Native HLS hardware Apple lewat proxy agar bebas buffer & 100% jalan di iOS.
+    if (!hlsSupported || isIOS) {
+      startNativeHls(computedProxySrc);
+      return () => {
+        destroyed = true;
+        clearTimeout(retryTimer);
+        video.removeAttribute("src");
+        video.load();
+      };
+    }
+
+    nativeModeRef.current = false;
+    let usingProxyInHls = isSafari || src.startsWith("/api/stream/hls");
+
+    const makeConfig = () => ({
+      enableWorker: true,
+      lowLatencyMode: false,
+      // Buffer lega supaya tidak gampang buffering/frame drop saat sinyal naik-turun
+      maxBufferLength: 45,
+      maxMaxBufferLength: 90,
+      maxBufferSize: 60 * 1000 * 1000,
+      backBufferLength: 15,
+      liveBackBufferLength: 15,
+      // Toleransi celah timestamp & perbaikan otomatis saat frame macet
+      maxBufferHole: 0.5,
+      highBufferWatchdogPeriod: 2,
+      nudgeOffset: 0.25,
+      nudgeMaxRetry: 12,
+      maxFragLookUpTolerance: 0.25,
+      // Jaga jarak aman 4 segmen dari ujung live agar stream mulus tanpa putus-putus
+      liveSyncDurationCount: 4,
+      liveMaxLatencyDurationCount: 14,
+      liveDurationInfinity: true,
+      startFragPrefetch: true,
+      progressive: true,
+      // Retry agresif untuk tahan gangguan jaringan sesaat
+      fragLoadingTimeOut: 20000,
+      fragLoadingMaxRetry: 8,
+      fragLoadingRetryDelay: 800,
+      fragLoadingMaxRetryTimeout: 16000,
+      manifestLoadingTimeOut: 15000,
+      manifestLoadingMaxRetry: 6,
+      manifestLoadingRetryDelay: 800,
+      levelLoadingTimeOut: 15000,
+      levelLoadingMaxRetry: 6,
+      levelLoadingRetryDelay: 800,
+      // Estimasi ABR halus agar tidak sering lompat resolusi mendadak
+      abrEwmaFastLive: 3.0,
+      abrEwmaSlowLive: 9.0,
+      abrEwmaDefaultEstimate: 1_200_000,
+      abrBandWidthFactor: 0.85,
+      abrBandWidthUpFactor: 0.6,
+      capLevelToPlayerSize: false,
+      xhrSetup: (xhr, urlStr) => {
+        const isProxyReq = String(urlStr || "").includes("/api/stream/hls");
+        xhr.withCredentials = !isProxyReq;
+        const { headerName: hn, headerValue: hv } = authRef.current;
+        if (!isProxyReq && hn && hv) xhr.setRequestHeader(hn, hv);
+      },
+      fetchSetup: (context, init) => {
+        const isProxyReq = String(context.url || "").includes("/api/stream/hls");
+        init.credentials = isProxyReq ? "same-origin" : "include";
+        const { headerName: hn, headerValue: hv } = authRef.current;
+        if (!isProxyReq && hn && hv) {
+          init.headers = { ...init.headers, [hn]: hv };
+        }
+        return new Request(context.url, init);
+      },
+    });
+
+    const wire = (hls, sourceUrl) => {
+      if (destroyed) return;
       hlsRef.current = hls;
-      hls.loadSource(src);
+      hls.loadSource(sourceUrl);
       hls.attachMedia(video);
+
       hls.on(Hls.Events.MANIFEST_PARSED, (_, d) => {
+        if (destroyed) return;
         const list = d.levels
           .map((l, index) => ({ index, height: l.height || 0, bitrate: l.bitrate || 0, name: l.name }))
           .filter((l) => !maxRes || !l.height || l.height <= maxRes)
@@ -117,64 +299,198 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
         }
         autoplay();
       });
-      hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => setCurrent(d.level));
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => {
+        if (!destroyed) setCurrent(d.level);
+      });
+
       hls.on(Hls.Events.ERROR, (_, d) => {
+        if (destroyed) return;
         const code = d.response?.code;
-        if (code === 401 || code === 403) {
-          if (resumeTries++ < 3) cb.current.onNeedResume?.();
+
+        // Bila terkena celah buffer non-fatal (BUFFER_STALLED_ERROR), lompati celah mikro otomatis
+        if (!d.fatal) {
+          if (
+            d.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR ||
+            d.details === Hls.ErrorDetails.BUFFER_NUDGE_ON_STALL
+          ) {
+            if (nudgePastBufferGap(video) && !userPausedRef.current) {
+              video.play().catch(() => {});
+            }
+          }
+          if (code === 401 || code === 403) {
+            const now = Date.now();
+            if (now - lastResumeAtRef.current > 8000) {
+              lastResumeAtRef.current = now;
+              cb.current.onNeedResume?.();
+            }
+          }
           return;
         }
-        if (!d.fatal) return;
-        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-        else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else {
+
+        // Jika akses langsung ke partner ditolak karena cookie pihak ketiga / CORS, alihkan ke proxy Worker
+        if (!usingProxyInHls && masterProxyRef.current && masterProxyRef.current !== sourceUrl) {
+          usingProxyInHls = true;
           hls.destroy();
-          retryTimer = setTimeout(() => wire(new Hls(config)), 2000);
+          wire(new Hls(makeConfig()), masterProxyRef.current);
+          return;
+        }
+
+        if (code === 401 || code === 403) {
+          const now = Date.now();
+          if (now - lastResumeAtRef.current > 8000) {
+            lastResumeAtRef.current = now;
+            cb.current.onNeedResume?.();
+          }
+          hls.startLoad();
+          return;
+        }
+
+        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad();
+        } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          const now = Date.now();
+          if (now - lastMediaRecoverRef.current < 5000) {
+            hls.swapAudioCodec();
+          }
+          lastMediaRecoverRef.current = now;
+          hls.recoverMediaError();
+        } else if (nativeSupported) {
+          startNativeHls(masterProxyRef.current);
+        } else {
+          hls.destroy();
+          retryTimer = setTimeout(() => {
+            if (!destroyed) wire(new Hls(makeConfig()), usingProxyInHls ? masterProxyRef.current : src);
+          }, 2000);
         }
       });
     };
-    wire(new Hls(config));
+
+    const initialUrl = usingProxyInHls ? computedProxySrc : src;
+    wire(new Hls(makeConfig()), initialUrl);
 
     return () => {
+      destroyed = true;
       clearTimeout(retryTimer);
       hlsRef.current?.destroy();
       hlsRef.current = null;
     };
-  }, [src, headerName, headerValue, maxRes]);
+  }, [src, maxRes]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── event video ──
+  // ── ketika tab ditinggal lalu dibuka lagi: lanjutkan mulus tanpa reload ──
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      const v = videoRef.current;
+      const hls = hlsRef.current;
+      if (!v) return;
+
+      if (hls) {
+        hls.startLoad();
+        const edge = hls.liveSyncPosition;
+        // Hanya lompat ke live jika tertinggal sangat jauh (> 30 detik) akibat tab disuspend browser
+        if (edge && v.currentTime && edge - v.currentTime > 30) {
+          v.currentTime = edge;
+        }
+      }
+      if (!userPausedRef.current && v.paused) {
+        v.play().catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  // ── event video + anti-flicker buffering + stall watchdog ──
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     v.volume = volume;
+    let lastTime = 0;
+
+    const clearBufferWait = () => {
+      clearTimeout(bufferTimer.current);
+      clearTimeout(stallTimer.current);
+      setBuffering(false);
+    };
+
+    const onWaiting = () => {
+      clearTimeout(bufferTimer.current);
+      // Tunda indikator loading 400ms agar jitter mikro tidak berkedip-kedip
+      bufferTimer.current = setTimeout(() => setBuffering(true), 400);
+
+      clearTimeout(stallTimer.current);
+      stallTimer.current = setTimeout(() => {
+        if (!v || v.paused) return;
+        if (!nudgePastBufferGap(v)) {
+          hlsRef.current?.startLoad();
+        }
+        if (!userPausedRef.current) v.play().catch(() => {});
+      }, 3200);
+    };
+
+    const onTimeUpdate = () => {
+      if (v.currentTime !== lastTime) {
+        lastTime = v.currentTime;
+        clearBufferWait();
+      }
+    };
+
     const on = {
       play: () => setPlaying(true),
       pause: () => setPlaying(false),
-      waiting: () => setBuffering(true),
-      playing: () => { setBuffering(false); setPlaying(true); },
-      canplay: () => setBuffering(false),
+      waiting: onWaiting,
+      stalled: onWaiting,
+      playing: () => { clearBufferWait(); setPlaying(true); },
+      canplay: clearBufferWait,
+      canplaythrough: clearBufferWait,
+      timeupdate: onTimeUpdate,
       volumechange: () => setMuted(v.muted || v.volume === 0),
+      webkitbeginfullscreen: () => setIsFull(true),
+      webkitendfullscreen: () => {
+        setIsFull(false);
+        // iOS kadang menjeda video saat keluar dari layar penuh bawaan
+        if (!userPausedRef.current) setTimeout(() => v.play().catch(() => {}), 120);
+      },
     };
     Object.entries(on).forEach(([k, f]) => v.addEventListener(k, f));
-    return () => Object.entries(on).forEach(([k, f]) => v.removeEventListener(k, f));
+    return () => {
+      clearTimeout(bufferTimer.current);
+      clearTimeout(stallTimer.current);
+      Object.entries(on).forEach(([k, f]) => v.removeEventListener(k, f));
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── statistik berkala: jarak dari live & bandwidth ──
+  // ── statistik berkala: hemat re-render agar main-thread tidak drop frame ──
   useEffect(() => {
     const id = setInterval(() => {
       const hls = hlsRef.current;
       const v = videoRef.current;
-      if (!hls || !v) return;
-      const edge = hls.liveSyncPosition;
-      setBehind(edge && v.currentTime ? Math.max(0, edge - v.currentTime) : 0);
-      setBw(hls.bandwidthEstimate || 0);
-    }, 1000);
+      if (!v) return;
+      if (hls) {
+        const edge = hls.liveSyncPosition;
+        const nextBehind = edge && v.currentTime ? Math.max(0, Math.round(edge - v.currentTime)) : 0;
+        setBehind((prev) => (Math.abs(prev - nextBehind) >= 2 || (prev < 12) !== (nextBehind < 12) ? nextBehind : prev));
+        const rawBw = hls.bandwidthEstimate || 0;
+        const roundedBw = rawBw > 0 ? Math.round(rawBw / 100_000) * 100_000 : 0;
+        setBw((prev) => (prev !== roundedBw ? roundedBw : prev));
+      } else if (nativeModeRef.current && v.seekable && v.seekable.length > 0) {
+        const edge = v.seekable.end(v.seekable.length - 1);
+        const nextBehind = edge && v.currentTime ? Math.max(0, Math.round(edge - v.currentTime)) : 0;
+        setBehind((prev) => (Math.abs(prev - nextBehind) >= 2 || (prev < 12) !== (nextBehind < 12) ? nextBehind : prev));
+      }
+    }, 2000);
     return () => clearInterval(id);
   }, []);
 
   const currentLevel = levels.find((l) => l.index === current);
   useEffect(() => {
-    cb.current.onStats?.({ height: currentLevel?.height || 0, bitrate: currentLevel?.bitrate || 0, bandwidth: bw, auto: selected === -1 });
+    cb.current.onStats?.({
+      height: currentLevel?.height || 0,
+      bitrate: currentLevel?.bitrate || 0,
+      bandwidth: bw,
+      auto: selected === -1,
+    });
   }, [currentLevel?.height, currentLevel?.bitrate, bw, selected]);
 
   // ── aksi ──
@@ -190,8 +506,15 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) { v.play().catch(() => {}); showFlash("play"); }
-    else { v.pause(); showFlash("pause"); }
+    if (v.paused) {
+      userPausedRef.current = false;
+      v.play().catch(() => {});
+      showFlash("play");
+    } else {
+      userPausedRef.current = true;
+      v.pause();
+      showFlash("pause");
+    }
   }, []);
 
   const toggleMute = useCallback(() => {
@@ -215,36 +538,79 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
   const goLive = useCallback(() => {
     const hls = hlsRef.current;
     const v = videoRef.current;
-    if (hls?.liveSyncPosition && v) v.currentTime = hls.liveSyncPosition;
-    v?.play().catch(() => {});
+    if (!v) return;
+    userPausedRef.current = false;
+    if (hls?.liveSyncPosition) {
+      v.currentTime = hls.liveSyncPosition;
+    } else if (v.seekable && v.seekable.length > 0) {
+      v.currentTime = v.seekable.end(v.seekable.length - 1);
+    }
+    v.play().catch(() => {});
   }, []);
 
   const pickQuality = (index) => {
     const hls = hlsRef.current;
-    if (!hls) return;
-    hls.currentLevel = index; // langsung ganti (buffer dibuang), -1 = auto
+    const v = videoRef.current;
     setSelected(index);
     const lvl = levels.find((l) => l.index === index);
     store.set("hrz_quality", lvl ? lvl.height : -1);
     setMenu(false);
+
+    if (hls) {
+      // Gunakan nextLevel saat sedang memutar agar pergantian resolusi halus tanpa membuang buffer
+      if (!v?.paused) hls.nextLevel = index;
+      else hls.currentLevel = index;
+      return;
+    }
+
+    // Mode Native HLS (iPhone/iOS): ganti ke URL sub-playlist resolusi atau kembali ke master
+    if (nativeModeRef.current && v) {
+      const targetUrl = index === -1 ? masterProxyRef.current : lvl?.url || masterProxyRef.current;
+      if (targetUrl) {
+        const wasPaused = v.paused;
+        v.src = targetUrl;
+        v.load();
+        setCurrent(index === -1 ? 0 : index);
+        if (!wasPaused) v.play().catch(() => {});
+      }
+    }
   };
 
   const toggleFull = useCallback(() => {
-    if (document.fullscreenElement) document.exitFullscreen?.();
-    else if (box.current?.requestFullscreen) box.current.requestFullscreen().catch(() => {});
-    else videoRef.current?.webkitEnterFullscreen?.(); // iOS
+    const v = videoRef.current;
+    const el = box.current;
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+    } else if (el?.requestFullscreen) {
+      el.requestFullscreen().catch(() => v?.webkitEnterFullscreen?.());
+    } else if (el?.webkitRequestFullscreen) {
+      el.webkitRequestFullscreen();
+    } else if (v?.webkitEnterFullscreen) {
+      v.webkitEnterFullscreen(); // iPhone / iOS Safari
+    }
   }, []);
+
   useEffect(() => {
-    const f = () => setIsFull(Boolean(document.fullscreenElement));
+    const f = () => setIsFull(Boolean(document.fullscreenElement || document.webkitFullscreenElement));
     document.addEventListener("fullscreenchange", f);
-    return () => document.removeEventListener("fullscreenchange", f);
+    document.addEventListener("webkitfullscreenchange", f);
+    return () => {
+      document.removeEventListener("fullscreenchange", f);
+      document.removeEventListener("webkitfullscreenchange", f);
+    };
   }, []);
 
   const togglePip = async () => {
     const v = videoRef.current;
+    if (!v) return;
     try {
-      if (document.pictureInPictureElement) await document.exitPictureInPicture();
-      else await v?.requestPictureInPicture();
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (v.requestPictureInPicture) {
+        await v.requestPictureInPicture();
+      } else if (v.webkitSupportsPresentationMode?.("picture-in-picture")) {
+        v.webkitSetPresentationMode(v.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture");
+      }
     } catch { /* tidak didukung */ }
   };
 
@@ -261,10 +627,23 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
   const poke = useCallback(() => {
     setIdle(false);
     clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setIdle(true), 2600);
+    hideTimer.current = setTimeout(() => setIdle(true), 2800);
   }, []);
   useEffect(() => () => clearTimeout(hideTimer.current), []);
   const hidden = idle && playing && !menu;
+
+  const onVideoTap = useCallback(
+    (e) => {
+      // Pada layar sentuh (iPhone / Android), ketukan pertama saat kontrol tersembunyi hanya menampilkan kontrol
+      const isTouch = e.nativeEvent?.pointerType === "touch" || "ontouchstart" in window;
+      if (isTouch && hidden) {
+        poke();
+        return;
+      }
+      togglePlay();
+    },
+    [hidden, poke, togglePlay]
+  );
 
   // ── menu kualitas ──
   useEffect(() => {
@@ -294,10 +673,13 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
     return () => window.removeEventListener("keydown", onKey);
   }, [togglePlay, toggleMute, toggleFull, goLive, onToggleTheater, poke]);
 
-  const atLive = behind < 8;
+  const atLive = behind < 12;
   const curH = currentLevel?.height;
   const qText = selected === -1 ? `Auto${curH ? ` · ${qLabel(curH)}` : ""}` : qLabel(levels.find((l) => l.index === selected)?.height);
-  const signal = bw >= 5e6 ? 4 : bw >= 2.5e6 ? 3 : bw >= 1e6 ? 2 : bw > 0 ? 1 : 0;
+  const signal = bw >= 5e6 ? 4 : bw >= 2.5e6 ? 3 : bw >= 1e6 ? 2 : bw > 0 ? 1 : (playing ? 3 : 0);
+  const canPip =
+    (typeof document !== "undefined" && document.pictureInPictureEnabled) ||
+    Boolean(videoRef.current?.webkitSupportsPresentationMode?.("picture-in-picture"));
 
   return (
     <div
@@ -310,8 +692,11 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
         ref={videoRef}
         className="pl__video"
         playsInline
+        webkit-playsinline="true"
+        x-webkit-airplay="allow"
+        preload="auto"
         poster={poster}
-        onClick={togglePlay}
+        onClick={onVideoTap}
         onDoubleClick={toggleFull}
       />
 
@@ -395,7 +780,7 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
           )}
         </div>
 
-        {document.pictureInPictureEnabled && (
+        {canPip && (
           <button className="pl__btn pl__hide-sm" onClick={togglePip} aria-label="Picture-in-picture" title="Picture-in-picture">
             <Ico d={I.pip} />
           </button>
@@ -412,3 +797,4 @@ export default function Player({ src, headerName, headerValue, maxRes, poster, t
     </div>
   );
 }
+

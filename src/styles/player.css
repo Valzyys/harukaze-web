@@ -1,7 +1,7 @@
 /* Player custom — kontrol di atas video, gaya "lampu panggung". */
-.pl { position: absolute; inset: 0; background: #000; color: #fff; user-select: none; -webkit-tap-highlight-color: transparent; }
+.pl { position: absolute; inset: 0; background: #000; color: #fff; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 .pl--idle { cursor: none; }
-.pl__video { width: 100%; height: 100%; display: block; background: #000; object-fit: contain; }
+.pl__video { width: 100%; height: 100%; display: block; background: #000; object-fit: contain; transform: translateZ(0); backface-visibility: hidden; -webkit-backface-visibility: hidden; }
 
 /* gradasi untuk keterbacaan kontrol */
 .pl::before,

@@ -172,10 +172,20 @@ export default function Room() {
 
   // ── sesi stream ──
   const startStream = useCallback(
-    async (p = pass) => {
+    async (p = pass, { silent = false, forceProxy = false } = {}) => {
       if (!p || !slug) return;
-      setStream({ state: "connecting" });
-      const r = await api("/stream/session", { method: "POST", body: { token: p.token, slug } });
+      if (!silent) {
+        setStream((s) => (s.state === "ready" ? s : { state: "connecting" }));
+      }
+      const isApple = typeof navigator !== "undefined" && (
+        /iPad|iPhone|iPod/.test(navigator.userAgent || "") ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) ||
+        /^((?!chrome|android).)*safari/i.test(navigator.userAgent || "")
+      );
+      const r = await api("/stream/session", {
+        method: "POST",
+        body: { token: p.token, slug, proxy: Boolean(isApple || forceProxy) },
+      });
       if (!r.ok) {
         if (r.status === 401 || r.status === 403) {
           store.del(passKey(slug));
@@ -186,20 +196,40 @@ export default function Room() {
           );
           return;
         }
-        setStream({ state: "error", message: partnerMsg(r, "Gagal menyiapkan sesi stream.") });
+        if (!silent) {
+          setStream({ state: "error", message: partnerMsg(r, "Gagal menyiapkan sesi stream.") });
+        }
         return;
       }
       try {
         const pb = await exchange(r.playback_url);
+        const directSrc = toPartner(pb.playlist_url);
+        const hName = pb.play_header_name || "X-Play-Key";
+        const hVal = pb.play_header_value || "";
+        const builtProxy = `/api/stream/hls?u=${encodeURIComponent(directSrc)}&hn=${encodeURIComponent(hName)}&hv=${encodeURIComponent(hVal)}`;
         setStream({
           state: "ready",
-          src: toPartner(pb.playlist_url),
-          headerName: pb.play_header_name || "X-Play-Key",
-          headerValue: pb.play_header_value || "",
+          src: directSrc,
+          proxySrc: r.proxied?.playlist_url || builtProxy,
+          headerName: hName,
+          headerValue: hVal,
           maxRes: pb.max_resolution || r.max_resolution || null,
         });
       } catch (e) {
-        setStream({ state: "error", message: e.message || "Gagal membuka stream." });
+        if (r.proxied?.ok && r.proxied.playlist_url) {
+          setStream({
+            state: "ready",
+            src: r.proxied.playlist_url,
+            proxySrc: r.proxied.playlist_url,
+            headerName: r.proxied.play_header_name || "X-Play-Key",
+            headerValue: r.proxied.play_header_value || "",
+            maxRes: r.proxied.max_resolution || r.max_resolution || null,
+          });
+          return;
+        }
+        if (!silent) {
+          setStream({ state: "error", message: e.message || "Gagal membuka stream." });
+        }
       }
     },
     [pass, slug]
@@ -212,14 +242,26 @@ export default function Room() {
       const res = await fetch(`${PARTNER_ORIGIN}/api/partner/resume`, { credentials: "include" });
       const r = await res.json();
       if (r.ok && r.playlist_url) {
-        setStream((s) => ({ ...s, state: "ready", src: toPartner(r.playlist_url), headerName: r.play_header_name || "X-Play-Key", headerValue: r.play_header_value || "" }));
-      } else await startStream();
+        const directSrc = toPartner(r.playlist_url);
+        const hName = r.play_header_name || "X-Play-Key";
+        const hVal = r.play_header_value || "";
+        setStream((s) => ({
+          ...s,
+          state: "ready",
+          src: directSrc,
+          proxySrc: `/api/stream/hls?u=${encodeURIComponent(directSrc)}&hn=${encodeURIComponent(hName)}&hv=${encodeURIComponent(hVal)}`,
+          headerName: hName,
+          headerValue: hVal,
+        }));
+      } else {
+        await startStream(pass, { silent: true });
+      }
     } catch {
-      await startStream();
+      await startStream(pass, { silent: true });
     } finally {
       resuming.current = false;
     }
-  }, [startStream]);
+  }, [startStream, pass]);
 
   useEffect(() => {
     if (pass && slug && stream.state === "idle") startStream(pass);
@@ -229,12 +271,6 @@ export default function Room() {
     if (!show?.showId) return;
     fetchShowMembers(show.showId).then(setMembers);
   }, [show?.showId]);
-
-  useEffect(() => {
-    const onVis = () => document.visibilityState === "visible" && stream.state === "ready" && resume();
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [stream.state, resume]);
 
   // ── masuk dengan email ──
   const enter = async (e) => {
@@ -440,6 +476,7 @@ export default function Room() {
               {stream.state === "ready" ? (
                 <Player
                   src={stream.src}
+                  proxySrc={stream.proxySrc}
                   headerName={stream.headerName}
                   headerValue={stream.headerValue}
                   maxRes={stream.maxRes}
@@ -448,7 +485,7 @@ export default function Room() {
                   onToggleTheater={toggleTheater}
                   onStats={setStats}
                   onNeedResume={resume}
-                  onUnsupported={() => setStream({ state: "error", message: "Browser ini belum didukung. Gunakan Chrome, Edge, atau Firefox terbaru." })}
+                  onUnsupported={() => setStream({ state: "error", message: "Browser ini belum didukung. Gunakan Safari, Chrome, Edge, atau Firefox terbaru." })}
                 />
               ) : (
                 <div className="player__state">

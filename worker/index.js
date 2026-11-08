@@ -402,8 +402,165 @@ async function resolvePartnerSlug(env, requested) {
   return env.SHOW_SLUG_FALLBACK || want;
 }
 
+async function exchangeOnWorker(request, env, playbackUrl, partnerOrigin) {
+  try {
+    const res = await fetch(playbackUrl, {
+      headers: {
+        origin: SITE_ORIGIN,
+        referer: `${SITE_ORIGIN}/`,
+        "user-agent": request.headers.get("user-agent") || "Mozilla/5.0",
+      },
+    });
+    const setCookies = typeof res.headers.getSetCookie === "function"
+      ? res.headers.getSetCookie()
+      : [res.headers.get("set-cookie")].filter(Boolean);
+    const ck = setCookies.map((c) => String(c).split(";")[0].trim()).filter(Boolean).join("; ");
+    const pb = await res.json();
+    if (!pb || !pb.ok || !pb.playlist_url) return null;
+    const u = toPartnerOrigin(pb.playlist_url, partnerOrigin);
+    const hn = pb.play_header_name || "X-Play-Key";
+    const hv = pb.play_header_value || "";
+    const pt = await signToken(env, {
+      t: "p",
+      u,
+      hn,
+      hv,
+      ck,
+      exp: Date.now() + VIEWER_TOKEN_TTL,
+    });
+    return {
+      ok: true,
+      playlist_url: `/api/stream/hls?pt=${encodeURIComponent(pt)}`,
+      raw_playlist_url: u,
+      play_header_name: hn,
+      play_header_value: hv,
+      max_resolution: pb.max_resolution || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const isAllowedStreamHost = (targetUrl, partnerOrigin) => {
+  try {
+    const h = new URL(targetUrl).hostname.toLowerCase();
+    const ph = new URL(partnerOrigin).hostname.toLowerCase();
+    return h === ph || h.endsWith(".oshigo.web.id") || h === "oshigo.web.id";
+  } catch {
+    return false;
+  }
+};
+
+function rewriteM3u8(text, baseUrl, partnerOrigin, wrapUrl) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      if (trimmed.startsWith("#")) {
+        return line.replace(/URI="([^"]+)"/g, (_, uri) => {
+          try {
+            const abs = toPartnerOrigin(new URL(uri, baseUrl).toString(), partnerOrigin);
+            return `URI="${wrapUrl(abs)}"`;
+          } catch {
+            return `URI="${uri}"`;
+          }
+        });
+      }
+      try {
+        const abs = toPartnerOrigin(new URL(trimmed, baseUrl).toString(), partnerOrigin);
+        return wrapUrl(abs);
+      } catch {
+        return line;
+      }
+    })
+    .join("\n");
+}
+
+async function streamHlsProxy(request, env, url) {
+  const partnerOrigin = env.PARTNER_ORIGIN || DEFAULT_PARTNER_ORIGIN;
+  const rawPt = url.searchParams.get("pt") || "";
+  const paramU = url.searchParams.get("u") || "";
+  let targetUrl = "";
+  let hn = url.searchParams.get("hn") || "X-Play-Key";
+  let hv = url.searchParams.get("hv") || "";
+  let ck = "";
+
+  if (rawPt) {
+    const p = await verifyToken(env, rawPt);
+    if (!p || p.t !== "p") return fail("TOKEN_INVALID", "Sesi stream kedaluwarsa.", 401);
+    targetUrl = paramU || p.u;
+    hn = p.hn || hn;
+    hv = p.hv || hv;
+    ck = p.ck || "";
+  } else if (paramU) {
+    targetUrl = paramU;
+  } else {
+    return fail("BAD_URL", "URL stream tidak ditemukan.", 400);
+  }
+
+  targetUrl = toPartnerOrigin(targetUrl, partnerOrigin);
+  if (!isAllowedStreamHost(targetUrl, partnerOrigin)) {
+    return fail("FORBIDDEN_HOST", "Host stream tidak diizinkan.", 403);
+  }
+
+  const upHeaders = {
+    origin: SITE_ORIGIN,
+    referer: `${SITE_ORIGIN}/`,
+    "user-agent": request.headers.get("user-agent") || "Mozilla/5.0",
+  };
+  if (hn && hv) upHeaders[hn] = hv;
+  if (ck) upHeaders.cookie = ck;
+  const range = request.headers.get("range");
+  if (range) upHeaders.range = range;
+
+  let upRes;
+  try {
+    upRes = await fetch(targetUrl, { headers: upHeaders });
+  } catch {
+    return fail("UPSTREAM_ERROR", "Gagal menghubungi server stream.", 502);
+  }
+
+  if (!upRes.ok) {
+    return new Response(upRes.body, {
+      status: upRes.status,
+      headers: { "cache-control": "no-store" },
+    });
+  }
+
+  const ct = (upRes.headers.get("content-type") || "").toLowerCase();
+  const pathname = new URL(targetUrl).pathname.toLowerCase();
+  const isM3u8 = ct.includes("mpegurl") || ct.includes("m3u") || pathname.endsWith(".m3u8");
+
+  if (isM3u8) {
+    const text = await upRes.text();
+    const wrapUrl = (absUrl) => {
+      if (rawPt) return `/api/stream/hls?pt=${encodeURIComponent(rawPt)}&u=${encodeURIComponent(absUrl)}`;
+      return `/api/stream/hls?u=${encodeURIComponent(absUrl)}&hn=${encodeURIComponent(hn)}&hv=${encodeURIComponent(hv)}`;
+    };
+    const rewritten = rewriteM3u8(text, targetUrl, partnerOrigin, wrapUrl);
+    return new Response(rewritten, {
+      status: 200,
+      headers: {
+        "content-type": "application/vnd.apple.mpegurl; charset=utf-8",
+        "cache-control": "no-store, no-cache, must-revalidate",
+        "access-control-allow-origin": "*",
+      },
+    });
+  }
+
+  const outHeaders = new Headers();
+  for (const k of ["content-type", "content-length", "content-range", "accept-ranges"]) {
+    const v = upRes.headers.get(k);
+    if (v) outHeaders.set(k, v);
+  }
+  outHeaders.set("cache-control", "public, max-age=30");
+  outHeaders.set("access-control-allow-origin", "*");
+  return new Response(upRes.body, { status: upRes.status, headers: outHeaders });
+}
+
 async function streamSession(request, env) {
-  const { token, slug: reqSlug } = await readJson(request);
+  const { token, slug: reqSlug, proxy } = await readJson(request);
   const p = await verifyToken(env, token);
   if (!p || p.t !== "v") return fail("TOKEN_INVALID", "Sesi akses habis, silakan masuk ulang.", 401);
 
@@ -443,9 +600,12 @@ async function streamSession(request, env) {
   if (!data || !data.ok) return json({ ok: false, code: data?.code || "SIGNER_ERROR", message: data?.message }, 502);
 
   const partnerOrigin = env.PARTNER_ORIGIN || DEFAULT_PARTNER_ORIGIN;
+  const playbackUrl = toPartnerOrigin(data.playback_url, partnerOrigin);
+  const proxied = proxy ? await exchangeOnWorker(request, env, playbackUrl, partnerOrigin) : null;
+
   // playback_url (dan playlist/resume nanti di browser) menunjuk ke oshigo.web.id
   // yang sudah di-takedown → arahkan ke st.oshigo.web.id.
-  return json({ ...data, playback_url: toPartnerOrigin(data.playback_url, partnerOrigin) });
+  return json({ ...data, playback_url: playbackUrl, ...(proxied ? { proxied } : {}) });
 }
 
 // ── admin ─────────────────────────────────────────────────────────────────
@@ -740,6 +900,7 @@ async function handleApi(request, env, url) {
   if (pathname === "/api/access/enter" && m === "POST") return accessEnter(request, env);
   if (pathname === "/api/bypass/enter" && m === "POST") return bypassEnter(request, env);
   if (pathname === "/api/stream/session" && m === "POST") return streamSession(request, env);
+  if (pathname === "/api/stream/hls" && (m === "GET" || m === "HEAD")) return streamHlsProxy(request, env, url);
 
   if (pathname === "/api/admin/login" && m === "POST") return adminLogin(request, env);
 
