@@ -12,10 +12,12 @@ ruang nonton.
 
 > Worker menandatangani request OshiGO (subkey harian HMAC), memaksa `Origin`/`Referer` ke
 > `harukaze48.my.id`, dan memanggil `st.oshigo.web.id`. Isi secret `PARTNER_KEY_ID` &
-> `PARTNER_SECRET`. **Catatan IP:** OshiGO mengikutkan IP pemanggil dalam tanda tangan. IP keluar
-> Cloudflare Workers berganti-ganti — pastikan rentang IP Workers (atau IP yang kamu set di
-> `PARTNER_SERVER_IP`) sudah di-whitelist di dashboard OshiGO, kalau tidak balasannya
-> `SIGNATURE_REJECTED`.
+> `PARTNER_SECRET`. **Catatan IP:** OshiGO menghitung tanda tangan dengan IP pemanggil yang ia lihat.
+> Dari Cloudflare Worker ke `st.oshigo.web.id` (juga di Cloudflare), IP itu adalah
+> `2a06:98c0:3600::103` — tetap, bukan IPv4 keluar Worker. Worker mempelajari IP yang benar
+> otomatis (dan menyimpannya di D1), jadi `PARTNER_SERVER_IP` tidak wajib. Daftarkan IP itu dan
+> domain `harukaze48.my.id` di dashboard OshiGO. Cek kapan saja lewat **Admin → Pengaturan →
+> Koneksi OshiGO**.
 
 ## Deploy (sekali jalan)
 
@@ -39,7 +41,7 @@ setelah 5 kali gagal.
 | `PARTNER_ORIGIN` | var | `https://st.oshigo.web.id` | Host partner OshiGO (signing, playback & resume) |
 | `PARTNER_KEY_ID` | secret | — | Key id partner OshiGO (wajib untuk stream) |
 | `PARTNER_SECRET` | secret | — | Secret partner OshiGO (wajib untuk stream) |
-| `PARTNER_SERVER_IP` | var | — | IP yang ikut ditandatangani; samakan dengan yang di-whitelist OshiGO |
+| `PARTNER_SERVER_IP` | var | dipelajari otomatis | IP penandatangan (boleh beberapa, pisah koma). Dari Worker: `2a06:98c0:3600::103` |
 | `SHOW_SLUG_FALLBACK` | var | — | show_slug OshiGO bila slug situs tak cocok (opsional) |
 | `ADMIN_USERNAME` | var/secret | `kaze` | Username admin |
 | `ADMIN_PASSWORD` | secret | `haru` | Password admin default (dipakai selama belum diganti dari panel) |

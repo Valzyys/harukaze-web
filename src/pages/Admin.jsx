@@ -754,6 +754,55 @@ function BypassList({ token, links, loading, q, setQ, status, setStatus, reload,
   );
 }
 
+// ── cek koneksi OshiGO ────────────────────────────────────────────────────
+const CHECK_HINT = {
+  OK: "Terhubung. Tanda tangan diterima.",
+  SIGNATURE_REJECTED: "Tanda tangan ditolak dengan IP ini.",
+  ORIGIN_NOT_ALLOWED: "Tanda tangan diterima, tapi server/domain pemanggil belum terdaftar di dashboard OshiGO.",
+  KEY_NOT_FOUND: "Key id tidak dikenali OshiGO.",
+  STALE_REQUEST: "Jam server meleset.",
+};
+
+function PartnerCheck({ token }) {
+  const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    const r = await api("/admin/partner-check", { token });
+    setBusy(false);
+    setRes(r);
+  };
+  return (
+    <section className="panel pcheck">
+      <header className="panel__head">
+        <h2 className="display">Koneksi OshiGO</h2>
+        <button type="button" className="btn btn--sm" onClick={run} disabled={busy}>
+          {busy ? <span className="spinner" /> : "Cek koneksi"}
+        </button>
+      </header>
+      <p className="muted">Mencoba <code>GET /shows</code> (tidak memakai kuota) dengan setiap kandidat IP penandatangan, lalu menyimpan IP yang berhasil.</p>
+      {res && !res.ok && <p className="note-error">{res.message || res.code}</p>}
+      {res?.ok && (
+        <>
+          <p className={`pcheck__verdict${res.working_ip ? " is-ok" : ""}`}>
+            {res.working_ip ? <>Terhubung lewat IP <b className="mono">{res.working_ip}</b></> : "Belum ada IP yang diterima OshiGO."}
+          </p>
+          <ul className="pcheck__list">
+            {res.results.map((x) => (
+              <li key={x.ip} className={x.ok ? "is-ok" : ""}>
+                <span className="mono">{x.ip}</span>
+                <span className="tag">{x.code}</span>
+                <small>{CHECK_HINT[x.code] || x.message}{x.ok && x.message ? ` · ${x.message}` : ""}</small>
+              </li>
+            ))}
+          </ul>
+          <p className="muted pcheck__meta mono">key {res.key_id} · PARTNER_SERVER_IP: {res.configured_ips.length ? res.configured_ips.join(", ") : "(tidak diset)"}</p>
+        </>
+      )}
+    </section>
+  );
+}
+
 // ── pengaturan ────────────────────────────────────────────────────────────
 function Settings({ token, toast }) {
   const [form, setForm] = useState(null);
@@ -801,6 +850,7 @@ function Settings({ token, toast }) {
         <div className="field"><label htmlFor="s-pw">Password baru (min. 4)</label><input id="s-pw" className="input" type="password" minLength={4} required value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" /></div>
         <button className="btn">Ganti password</button>
       </form>
+      <PartnerCheck token={token} />
     </div>
   );
 }

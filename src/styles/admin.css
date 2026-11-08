@@ -125,3 +125,16 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
   .grow__acts { grid-column: 1; grid-row: auto; justify-content: flex-start; max-width: none; margin-top: 6px; }
   .grantform__row, .bypass-limits { grid-template-columns: 1fr; }
 }
+
+/* cek koneksi OshiGO */
+.pcheck { grid-column: 1 / -1; }
+.pcheck code { font-family: var(--f-mono); font-size: 13px; }
+.pcheck__verdict { margin: 0; padding: 10px 12px; border-radius: var(--r); background: var(--red-soft); color: var(--red-deep); font-weight: 600; }
+.pcheck__verdict.is-ok { background: #dcefe0; color: var(--ok); }
+.pcheck__list { list-style: none; margin: 0; padding: 0; display: grid; }
+.pcheck__list li { display: grid; grid-template-columns: minmax(0, 220px) auto 1fr; gap: 4px 12px; align-items: baseline; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.pcheck__list li .mono { overflow-wrap: anywhere; }
+.pcheck__list li small { color: var(--ink-3); }
+.pcheck__list li.is-ok .tag { border-color: var(--ok); color: var(--ok); }
+.pcheck__meta { font-size: 11px; }
+@media (max-width: 640px) { .pcheck__list li { grid-template-columns: 1fr auto; } .pcheck__list li small { grid-column: 1 / -1; } }

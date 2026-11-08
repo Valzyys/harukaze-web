@@ -20,9 +20,12 @@
       "migrations_dir": "migrations"
     }
   ],
+  // Jangan hapus vars yang di-set lewat dashboard Cloudflare saat deploy.
+  "keep_vars": true,
   "vars": {
     "PARTNER_ORIGIN": "https://st.oshigo.web.id"
-    // Opsional: PARTNER_SERVER_IP (IP yang di-whitelist OshiGO), SHOW_SLUG_FALLBACK
+    // Opsional: PARTNER_SERVER_IP (IP penandatangan; default dipelajari otomatis — dari
+    // Worker biasanya 2a06:98c0:3600::103), SHOW_SLUG_FALLBACK
   }
   // Login admin default: kaze / haru (bisa ditimpa: ADMIN_USERNAME, ADMIN_PASSWORD)
   // Secret stream (wajib): PARTNER_KEY_ID, PARTNER_SECRET  — signer sudah di dalam Worker ini.
