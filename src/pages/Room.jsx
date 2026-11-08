@@ -203,28 +203,28 @@ export default function Room() {
       }
       try {
         const pb = await exchange(r.playback_url);
-        const directSrc = toPartner(pb.playlist_url);
+        const directSrc = toPartner(pb.auto_playlist_url || pb.playlist_url);
         const hName = pb.play_header_name || "X-Play-Key";
         const hVal = pb.play_header_value || "";
         const builtProxy = `/api/stream/hls?u=${encodeURIComponent(directSrc)}&hn=${encodeURIComponent(hName)}&hv=${encodeURIComponent(hVal)}`;
-        setStream({
+        setStream((s) => ({
           state: "ready",
-          src: directSrc,
+          src: silent && s.src ? s.src : directSrc,
           proxySrc: r.proxied?.playlist_url || builtProxy,
           headerName: hName,
           headerValue: hVal,
-          maxRes: pb.max_resolution || r.max_resolution || null,
-        });
+          maxRes: pb.max_resolution || r.max_resolution || s.maxRes || null,
+        }));
       } catch (e) {
         if (r.proxied?.ok && r.proxied.playlist_url) {
-          setStream({
+          setStream((s) => ({
             state: "ready",
-            src: r.proxied.playlist_url,
+            src: silent && s.src ? s.src : r.proxied.playlist_url,
             proxySrc: r.proxied.playlist_url,
             headerName: r.proxied.play_header_name || "X-Play-Key",
             headerValue: r.proxied.play_header_value || "",
-            maxRes: r.proxied.max_resolution || r.max_resolution || null,
-          });
+            maxRes: r.proxied.max_resolution || r.max_resolution || s.maxRes || null,
+          }));
           return;
         }
         if (!silent) {
@@ -241,14 +241,14 @@ export default function Room() {
     try {
       const res = await fetch(`${PARTNER_ORIGIN}/api/partner/resume`, { credentials: "include" });
       const r = await res.json();
-      if (r.ok && r.playlist_url) {
-        const directSrc = toPartner(r.playlist_url);
+      if (r.ok && (r.auto_playlist_url || r.playlist_url)) {
+        const directSrc = toPartner(r.auto_playlist_url || r.playlist_url);
         const hName = r.play_header_name || "X-Play-Key";
         const hVal = r.play_header_value || "";
         setStream((s) => ({
           ...s,
           state: "ready",
-          src: directSrc,
+          src: s.src || directSrc,
           proxySrc: `/api/stream/hls?u=${encodeURIComponent(directSrc)}&hn=${encodeURIComponent(hName)}&hv=${encodeURIComponent(hVal)}`,
           headerName: hName,
           headerValue: hVal,

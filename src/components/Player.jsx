@@ -221,61 +221,81 @@ export default function Player({
     nativeModeRef.current = false;
     let usingProxyInHls = isSafari || src.startsWith("/api/stream/hls");
 
-    const makeConfig = () => ({
-      enableWorker: true,
-      lowLatencyMode: false,
-      // Buffer lega supaya tidak gampang buffering/frame drop saat sinyal naik-turun
-      maxBufferLength: 45,
-      maxMaxBufferLength: 90,
-      maxBufferSize: 60 * 1000 * 1000,
-      backBufferLength: 15,
-      liveBackBufferLength: 15,
-      // Toleransi celah timestamp & perbaikan otomatis saat frame macet
-      maxBufferHole: 0.5,
-      highBufferWatchdogPeriod: 2,
-      nudgeOffset: 0.25,
-      nudgeMaxRetry: 12,
-      maxFragLookUpTolerance: 0.25,
-      // Jaga jarak aman 4 segmen dari ujung live agar stream mulus tanpa putus-putus
-      liveSyncDurationCount: 4,
-      liveMaxLatencyDurationCount: 14,
-      liveDurationInfinity: true,
-      startFragPrefetch: true,
-      progressive: true,
-      // Retry agresif untuk tahan gangguan jaringan sesaat
-      fragLoadingTimeOut: 20000,
-      fragLoadingMaxRetry: 8,
-      fragLoadingRetryDelay: 800,
-      fragLoadingMaxRetryTimeout: 16000,
-      manifestLoadingTimeOut: 15000,
-      manifestLoadingMaxRetry: 6,
-      manifestLoadingRetryDelay: 800,
-      levelLoadingTimeOut: 15000,
-      levelLoadingMaxRetry: 6,
-      levelLoadingRetryDelay: 800,
-      // Estimasi ABR halus agar tidak sering lompat resolusi mendadak
-      abrEwmaFastLive: 3.0,
-      abrEwmaSlowLive: 9.0,
-      abrEwmaDefaultEstimate: 1_200_000,
-      abrBandWidthFactor: 0.85,
-      abrBandWidthUpFactor: 0.6,
-      capLevelToPlayerSize: false,
-      xhrSetup: (xhr, urlStr) => {
-        const isProxyReq = String(urlStr || "").includes("/api/stream/hls");
-        xhr.withCredentials = !isProxyReq;
-        const { headerName: hn, headerValue: hv } = authRef.current;
-        if (!isProxyReq && hn && hv) xhr.setRequestHeader(hn, hv);
-      },
-      fetchSetup: (context, init) => {
-        const isProxyReq = String(context.url || "").includes("/api/stream/hls");
-        init.credentials = isProxyReq ? "same-origin" : "include";
-        const { headerName: hn, headerValue: hv } = authRef.current;
-        if (!isProxyReq && hn && hv) {
-          init.headers = { ...init.headers, [hn]: hv };
-        }
-        return new Request(context.url, init);
-      },
-    });
+    const makeConfig = () => {
+      const fastTimeout = { maxNumRetry: 4, retryDelayMs: 0, maxRetryDelayMs: 0 };
+      const errRetry = { maxNumRetry: 10, retryDelayMs: 400, maxRetryDelayMs: 5000 };
+      return {
+        enableWorker: true,
+        preferManagedMediaSource: true,
+        lowLatencyMode: false,
+        // Buffer lega supaya tidak gampang buffering/frame drop saat sinyal naik-turun
+        maxBufferLength: 45,
+        maxMaxBufferLength: 90,
+        maxBufferSize: 60 * 1000 * 1000,
+        backBufferLength: 15,
+        liveBackBufferLength: 15,
+        // Toleransi celah timestamp & perbaikan otomatis saat frame macet
+        maxBufferHole: 0.5,
+        highBufferWatchdogPeriod: 2,
+        nudgeOffset: 0.25,
+        nudgeMaxRetry: 12,
+        nudgeOnVideoHole: true,
+        maxFragLookUpTolerance: 0.25,
+        // Jaga jarak aman 4 segmen dari ujung live agar stream mulus tanpa putus-putus
+        liveSyncDurationCount: 4,
+        liveMaxLatencyDurationCount: 14,
+        liveDurationInfinity: true,
+        startFragPrefetch: true,
+        progressive: true,
+        fragLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 8000,
+            maxLoadTimeMs: 20000,
+            timeoutRetry: fastTimeout,
+            errorRetry: errRetry,
+          },
+        },
+        playlistLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 6000,
+            maxLoadTimeMs: 10000,
+            timeoutRetry: fastTimeout,
+            errorRetry: errRetry,
+          },
+        },
+        manifestLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 8000,
+            maxLoadTimeMs: 15000,
+            timeoutRetry: { maxNumRetry: 3, retryDelayMs: 0, maxRetryDelayMs: 0 },
+            errorRetry: { maxNumRetry: 6, retryDelayMs: 400, maxRetryDelayMs: 4000 },
+          },
+        },
+        // Estimasi ABR halus agar tidak sering lompat resolusi mendadak
+        abrEwmaFastLive: 3.0,
+        abrEwmaSlowLive: 9.0,
+        abrEwmaDefaultEstimate: 1_500_000,
+        abrBandWidthFactor: 0.85,
+        abrBandWidthUpFactor: 0.65,
+        capLevelToPlayerSize: false,
+        capLevelOnFPSDrop: false,
+        xhrSetup: (xhr, urlStr) => {
+          const isProxyReq = String(urlStr || "").includes("/api/stream/hls");
+          xhr.withCredentials = !isProxyReq;
+          const { headerName: hn, headerValue: hv } = authRef.current;
+          if (!isProxyReq && hn && hv) xhr.setRequestHeader(hn, hv);
+        },
+        fetchSetup: (context, init) => {
+          const isProxyReq = String(context.url || "").includes("/api/stream/hls");
+          init.credentials = isProxyReq ? "same-origin" : "include";
+          const { headerName: hn, headerValue: hv } = authRef.current;
+          if (!isProxyReq && hn && hv) {
+            init.headers = { ...init.headers, [hn]: hv };
+          }
+          return new Request(context.url, init);
+        },
+      };
+    };
 
     const wire = (hls, sourceUrl) => {
       if (destroyed) return;
@@ -294,14 +314,26 @@ export default function Player({
         const pref = store.get("hrz_quality", -1);
         const match = pref > 0 ? list.find((l) => l.height === pref) : null;
         if (match) {
-          hls.currentLevel = match.index;
+          hls.loadLevel = match.index;
+          hls.nextLevel = match.index;
           setSelected(match.index);
+        } else if (list.length) {
+          const byBitrate = list.slice().sort((a, b) => a.bitrate - b.bitrate);
+          const mid = byBitrate.find((l) => l.height >= 360 && l.height <= 720) || byBitrate[0];
+          if (mid) hls.startLevel = mid.index;
+          setSelected(-1);
         }
         autoplay();
       });
 
       hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => {
         if (!destroyed) setCurrent(d.level);
+      });
+
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        if (destroyed) return;
+        clearTimeout(bufferTimer.current);
+        setBuffering(false);
       });
 
       hls.on(Hls.Events.ERROR, (_, d) => {
@@ -312,7 +344,8 @@ export default function Player({
         if (!d.fatal) {
           if (
             d.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR ||
-            d.details === Hls.ErrorDetails.BUFFER_NUDGE_ON_STALL
+            d.details === Hls.ErrorDetails.BUFFER_NUDGE_ON_STALL ||
+            d.details === Hls.ErrorDetails.BUFFER_SEEK_OVER_HOLE
           ) {
             if (nudgePastBufferGap(video) && !userPausedRef.current) {
               video.play().catch(() => {});
@@ -380,13 +413,16 @@ export default function Player({
   // ── ketika tab ditinggal lalu dibuka lagi: lanjutkan mulus tanpa reload ──
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState === "hidden") return;
       const v = videoRef.current;
       const hls = hlsRef.current;
       if (!v) return;
 
+      clearTimeout(bufferTimer.current);
+      if (v.readyState >= 2) setBuffering(false);
+
       if (hls) {
-        hls.startLoad();
+        hls.startLoad(-1);
         const edge = hls.liveSyncPosition;
         // Hanya lompat ke live jika tertinggal sangat jauh (> 30 detik) akibat tab disuspend browser
         if (edge && v.currentTime && edge - v.currentTime > 30) {
@@ -398,7 +434,11 @@ export default function Player({
       }
     };
     document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
+    window.addEventListener("pageshow", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pageshow", onVis);
+    };
   }, []);
 
   // ── event video + anti-flicker buffering + stall watchdog ──
