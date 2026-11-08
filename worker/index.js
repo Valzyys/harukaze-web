@@ -351,11 +351,10 @@ async function hmacHex(keyBytes, msg) {
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function partnerFetch(env, method, pathname, bodyObj) {
+async function partnerFetch(env, method, pathname, bodyObj, serverIp = "") {
   const base = (env.PARTNER_ORIGIN || DEFAULT_PARTNER_ORIGIN).replace(/\/$/, "");
   const keyId = env.PARTNER_KEY_ID || "";
   const secret = env.PARTNER_SECRET || "";
-  const serverIp = env.PARTNER_SERVER_IP || "";
   const body = bodyObj === undefined ? "" : JSON.stringify(bodyObj); // ditandatangani & dikirim sama persis
 
   const day = new Date().toISOString().slice(0, 10);
@@ -383,13 +382,108 @@ async function partnerFetch(env, method, pathname, bodyObj) {
 
 const hexToBytes = (hex) => Uint8Array.from(hex.match(/.{2}/g) || [], (h) => parseInt(h, 16));
 
+// ── IP yang ikut ditandatangani ───────────────────────────────────────────
+// OshiGO menghitung subkey dengan IP pemanggil yang IA lihat. IP keluar Cloudflare
+// Workers tidak tetap, jadi IP tunggal di env bisa basi → SIGNATURE_REJECTED.
+// Urutan coba: IP terakhir yang berhasil (disimpan di D1) → PARTNER_SERVER_IP
+// (boleh dipisah koma) → IP keluar yang terdeteksi saat ini. Percobaan yang ditolak
+// tidak membuat sesi, jadi tidak memakai kuota.
+const WORKERS_SUBREQUEST_IP = "2a06:98c0:3600::103";
+let learnedPartnerIp = null; // null = belum dimuat dari D1
+let learnedLoaded = false;
+
+const configuredIps = (env) =>
+  String(env.PARTNER_SERVER_IP || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+
+async function detectEgressIps() {
+  const found = [];
+  const grab = async (url, re) => {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(4000), headers: { "cache-control": "no-cache" } });
+      const m = (await r.text()).match(re);
+      if (m) found.push({ source: new URL(url).host, ip: m[1].trim() });
+    } catch { /* sumber ini gagal, abaikan */ }
+  };
+  await Promise.all([
+    grab("https://www.cloudflare.com/cdn-cgi/trace", /^ip=(.+)$/m),
+    grab("https://1.1.1.1/cdn-cgi/trace", /^ip=(.+)$/m),
+    grab("https://api.ipify.org", /^\s*([0-9a-fA-F:.]+)\s*$/),
+    grab("https://api64.ipify.org", /^\s*([0-9a-fA-F:.]+)\s*$/),
+  ]);
+  return found;
+}
+
+async function partnerCall(env, method, pathname, bodyObj) {
+  if (!learnedLoaded) {
+    learnedPartnerIp = await getSetting(env.DB, "partner_ip"); // null kalau belum pernah berhasil
+    learnedLoaded = true;
+  }
+  const tried = new Set();
+  let last = null;
+  const attempt = async (ip) => {
+    if (tried.has(ip)) return null;
+    tried.add(ip);
+    last = await partnerFetch(env, method, pathname, bodyObj, ip);
+    if (last?.code === "SIGNATURE_REJECTED") return null;
+    if (ip !== learnedPartnerIp) {
+      learnedPartnerIp = ip;
+      await setSetting(env.DB, "partner_ip", ip).catch(() => {});
+    }
+    return last;
+  };
+
+  for (const ip of [learnedPartnerIp, ...configuredIps(env)].filter((x) => x !== null)) {
+    const r = await attempt(ip);
+    if (r) return r;
+  }
+  const detected = (await detectEgressIps()).map((d) => d.ip);
+  for (const ip of [...detected, WORKERS_SUBREQUEST_IP, ""]) {
+    const r = await attempt(ip);
+    if (r) return r;
+  }
+  return last;
+}
+
+// Diagnostik admin: IP terdeteksi + hasil GET /shows per kandidat IP (tanpa kuota).
+async function adminPartnerCheck(env) {
+  if (!env.PARTNER_KEY_ID || !env.PARTNER_SECRET) {
+    return json({ ok: false, code: "SIGNER_NOT_CONFIGURED", message: "PARTNER_KEY_ID/PARTNER_SECRET belum dipasang." });
+  }
+  const detected = await detectEgressIps();
+  const learned = await getSetting(env.DB, "partner_ip");
+  const candidates = [...new Set([...(learned !== null ? [learned] : []), ...configuredIps(env), ...detected.map((d) => d.ip), WORKERS_SUBREQUEST_IP, ""])];
+  const results = [];
+  for (const ip of candidates) {
+    let r;
+    try { r = await partnerFetch(env, "GET", `${PARTNER_API}/shows`, undefined, ip); } catch (e) { r = { ok: false, code: "FETCH_ERROR", message: String(e?.message || e) }; }
+    results.push({ ip: ip || "(kosong)", ok: Boolean(r?.ok), code: r?.ok ? "OK" : r?.code || "?", message: r?.ok ? `${(r.shows || []).length} show, paket ${r.plan?.billing || "?"}` : r?.message });
+  }
+  const winner = results.find((x) => x.ok);
+  if (winner) {
+    const ip = winner.ip === "(kosong)" ? "" : winner.ip;
+    learnedPartnerIp = ip;
+    learnedLoaded = true;
+    await setSetting(env.DB, "partner_ip", ip).catch(() => {});
+  }
+  return json({
+    ok: true,
+    partner_origin: env.PARTNER_ORIGIN || DEFAULT_PARTNER_ORIGIN,
+    key_id: env.PARTNER_KEY_ID.slice(0, 10) + "…",
+    configured_ips: configuredIps(env),
+    learned_ip: learned,
+    detected,
+    results,
+    working_ip: winner ? winner.ip : null,
+  });
+}
+
 // Slug situs (slug IDN Plus) → show_slug OshiGO. Cocok persis → fallback → satu-satunya entitled.
 let showsCache = { at: 0, data: null };
 async function resolvePartnerSlug(env, requested) {
   const want = String(requested || "").trim().toLowerCase();
   try {
     if (!showsCache.data || Date.now() - showsCache.at > 60_000) {
-      const s = await partnerFetch(env, "GET", `${PARTNER_API}/shows`);
+      const s = await partnerCall(env, "GET", `${PARTNER_API}/shows`);
       if (s?.ok) showsCache = { at: Date.now(), data: s };
     }
     const list = showsCache.data?.shows || [];
@@ -432,7 +526,7 @@ async function streamSession(request, env) {
   try {
     const slug = await resolvePartnerSlug(env, targetSlug);
     const viewerSeed = p.b ? `bypass:${p.b}:${p.d}` : p.e;
-    data = await partnerFetch(env, "POST", `${PARTNER_API}/session`, {
+    data = await partnerCall(env, "POST", `${PARTNER_API}/session`, {
       show_slug: slug,
       viewer_id: (await sha256Hex(viewerSeed)).slice(0, 32),
       ttl: 120,
@@ -746,6 +840,7 @@ async function handleApi(request, env, url) {
   if (pathname.startsWith("/api/admin/")) {
     if (!(await requireAdmin(request, env))) return fail("UNAUTHORIZED", "Sesi admin habis, login lagi.", 401);
     if (pathname === "/api/admin/stats" && m === "GET") return adminStats(env);
+    if (pathname === "/api/admin/partner-check" && m === "GET") return adminPartnerCheck(env);
     if (pathname === "/api/admin/grants" && m === "GET") return adminListGrants(url, env);
     if (pathname === "/api/admin/grants" && m === "POST") return adminCreateGrants(request, env);
     const gm = pathname.match(/^\/api\/admin\/grants\/([\w-]+)$/);
